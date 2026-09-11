@@ -11,10 +11,31 @@ const {
 } = require('../lib/pricing');
 
 test('resolves current Codex model slugs to friendly names', () => {
+  assert.equal(modelDisplayName('gpt-5.6-sol'), 'GPT-5.6 Sol');
+  assert.equal(modelDisplayName('gpt-5.6-terra'), 'GPT-5.6 Terra');
+  assert.equal(modelDisplayName('gpt-5.6-luna'), 'GPT-5.6 Luna');
   assert.equal(modelDisplayName('gpt-5.5'), 'GPT-5.5');
   assert.equal(modelDisplayName('openai/gpt-5.4-mini-2026-06-01'), 'GPT-5.4 mini');
   assert.equal(modelDisplayName('gpt-5.4-nano'), 'GPT-5.4 nano');
   assert.equal(modelInfo('unknown-model'), null);
+});
+
+test('uses the current GPT-5.6 family rates', () => {
+  assert.equal(costForUsage('gpt-5.6-sol', {
+    inputTokens: 1_000_000,
+    cachedInputTokens: 0,
+    outputTokens: 100_000,
+  }), 6);
+  assert.equal(costForUsage('gpt-5.6-terra', {
+    inputTokens: 1_000_000,
+    cachedInputTokens: 0,
+    outputTokens: 100_000,
+  }), 3.2);
+  assert.equal(costForUsage('gpt-5.6-luna', {
+    inputTokens: 1_000_000,
+    cachedInputTokens: 0,
+    outputTokens: 100_000,
+  }), 0.32);
 });
 
 test('prices cached input at cached-input rate and output at output rate', () => {
@@ -24,7 +45,7 @@ test('prices cached input at cached-input rate and output at output rate', () =>
     outputTokens: 100_000,
   });
 
-  assert.equal(usd, 2.75625);
+  assert.equal(usd, 6.875);
 });
 
 test('sessionCost reports per-model totals and incomplete pricing for unknown models', () => {

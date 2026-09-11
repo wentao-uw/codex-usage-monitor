@@ -1,6 +1,9 @@
 node_modules/
 npm-debug.log*
 coverage/
+dist/
+macos/CodexUsageMenuBar/.build/
+macos/CodexUsageMenuBar/.swiftpm/
 .DS_Store
 Thumbs.db
 *.log

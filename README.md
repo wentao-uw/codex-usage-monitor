@@ -1,12 +1,26 @@
 # codex-usage-monitor
 
-> A zero-dependency Codex CLI monitor for token usage, active model, reasoning
-> effort, context fill, cache hit rate, rolling limits, and API-equivalent cost.
+> A zero-dependency Codex usage dashboard for Desktop and CLI, covering token
+> usage, active model, reasoning effort, context fill, cache hit rate, rolling
+> limits, and API-equivalent cost.
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Node >=18](https://img.shields.io/badge/node-%3E%3D18-43853d.svg)](package.json)
 
 ## What it shows
+
+Codex Desktop renders an inline usage card when the `show_usage` tool is called.
+The card includes session totals, current context fill, cache hit rate, rolling
+limits, API-equivalent cost, and a Refresh button. Ask “Show my Codex usage” or
+mention the plugin to open it.
+
+The UI is backed by a local stdio MCP server. It reads the same local session
+JSONL files as the CLI and makes no network requests.
+
+The repository also includes a native macOS menu bar app. It intentionally shows
+only two account-wide local aggregates: total tokens across discovered Codex
+sessions and their API-equivalent cost. It supports Chinese and English, refreshes
+every 10 minutes, and includes a manual Refresh button.
 
 Compact statusline:
 
@@ -31,6 +45,8 @@ Stop-hook box after a Codex turn:
 ## Features
 
 - Reads Codex CLI session JSONL files from `~/.codex/sessions`.
+- Renders a responsive inline usage card in Codex Desktop through MCP Apps.
+- Refreshes the card in place without adding another conversation turn.
 - Supports Codex `Stop` hooks through the bundled `hooks/hooks.json`.
 - Shows the active model and reasoning effort from `turn_context` records.
 - Shows latest-turn and session-total token usage from `token_count` events.
@@ -42,6 +58,39 @@ Stop-hook box after a Codex turn:
 - Provides `summary`, `statusline`, `json`, `watch`, and `doctor` commands.
 - Uses only Node.js built-ins. No install step beyond cloning the repo.
 - Keeps all data local. No telemetry, no network calls at runtime.
+
+## macOS Menu Bar App
+
+Requirements: macOS 13 or newer and the Swift toolchain supplied by Xcode or
+Command Line Tools. Build the app with:
+
+```bash
+npm run build:macos
+```
+
+The signed local build is written to:
+
+```text
+dist/Codex Usage Monitor.app
+```
+
+Open it and click the chart icon in the macOS menu bar. Choose 中文 or English
+from the language menu. The app reads `~/.codex/sessions` and
+`~/.codex/archived_sessions` locally; it does not make network requests. To run
+it automatically after login, add the app in System Settings → General → Login
+Items.
+
+## Codex Desktop UI
+
+After installing or updating the plugin, start a new Codex task so the MCP tool
+is loaded. Then ask:
+
+```text
+Show my Codex usage.
+```
+
+The `show_usage` tool returns both structured data and a visual card. Clients
+that do not support MCP Apps still receive a readable text summary.
 
 ## Recommended Usage
 
@@ -170,7 +219,7 @@ Environment variables:
 
 `API≈` means API-equivalent dollars, not your Codex subscription bill. The
 pricing table lives in `lib/pricing.js` and was checked against the OpenAI API
-pricing page on 2026-06-30. Pricing can change, so update the table when OpenAI
+pricing pages on 2026-09-11. Pricing can change, so update the table when OpenAI
 changes model prices.
 
 The current cost formula is:

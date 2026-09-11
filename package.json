@@ -10,6 +10,8 @@
   "type": "commonjs",
   "scripts": {
     "test": "node --test test/*.test.js",
+    "test:macos": "swift run --package-path macos/CodexUsageMenuBar UsageCoreCheck",
+    "build:macos": "zsh scripts/build-macos-app.sh",
     "smoke:statusline": "node bin/codex-usage-monitor.js statusline --file test/fixtures/session-basic.jsonl",
     "smoke:summary": "node bin/codex-usage-monitor.js summary --file test/fixtures/session-basic.jsonl"
   },
@@ -38,10 +40,15 @@
   "homepage": "https://github.com/harveyxiacn/codex-usage-monitor#readme",
   "files": [
     ".codex-plugin/",
+    ".mcp.json",
     "bin/",
     "docs/",
     "hooks/",
     "lib/",
+    "macos/",
+    "mcp/",
+    "scripts/",
+    "ui/",
     "README.md",
     "LICENSE",
     "CHANGELOG.md"
