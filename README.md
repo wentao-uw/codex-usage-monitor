@@ -27,6 +27,10 @@ cost for every model found in the logs. It supports Chinese and English, refresh
 every 10 minutes, and includes a manual Refresh button whose completion time is
 shown in the footer.
 
+After the initial history scan, the macOS app caches unchanged sessions in
+memory and reads only bytes appended to active JSONL files. Manual and scheduled
+refreshes therefore avoid reparsing the full local history.
+
 Compact statusline:
 
 ```text

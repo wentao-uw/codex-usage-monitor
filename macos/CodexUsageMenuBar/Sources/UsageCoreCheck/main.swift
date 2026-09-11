@@ -2,10 +2,16 @@ import Foundation
 import UsageCore
 
 if CommandLine.arguments.contains("--live") {
+    let coldStartedAt = Date()
     let snapshot = try UsageScanner.scan()
+    let coldDuration = Date().timeIntervalSince(coldStartedAt)
+    let warmStartedAt = Date()
+    let warmSnapshot = try UsageScanner.scan()
+    let warmDuration = Date().timeIntervalSince(warmStartedAt)
     let cost = snapshot.apiEquivalentUSD.map { String(format: "%.6f", $0) } ?? "unavailable"
     let cycle = snapshot.currentCycle.map { "\($0.label): \(snapshot.currentCycleUsage.totalTokens) tokens" } ?? "cycle unavailable"
-    print("Live scan passed: \(snapshot.totalTokens) historical tokens, \(cycle), \(snapshot.currentCycleModels.count)/\(snapshot.historicalModels.count) cycle/history models, API≈$\(cost), \(snapshot.sessionCount) sessions")
+    let warmDelta = warmSnapshot.totalTokens - snapshot.totalTokens
+    print("Live scan passed: \(warmSnapshot.totalTokens) historical tokens, \(cycle), \(warmSnapshot.currentCycleModels.count)/\(warmSnapshot.historicalModels.count) cycle/history models, API≈$\(cost), \(warmSnapshot.sessionCount) sessions, cold \(String(format: "%.3fs", coldDuration)), warm \(String(format: "%.3fs", warmDuration)), warm delta \(warmDelta)")
     exit(EXIT_SUCCESS)
 }
 
@@ -57,5 +63,19 @@ precondition(Set(snapshot.currentCycleModels.map(\.modelID)) == Set(["gpt-5.5", 
 precondition(snapshot.currentCycleModels.allSatisfy { $0.usage.totalTokens == 550 }, "expected per-model cycle usage")
 let refreshedSnapshot = try UsageScanner.scan(codexHome: root, now: now.addingTimeInterval(60))
 precondition(refreshedSnapshot.updatedAt > snapshot.updatedAt, "expected manual refresh to advance displayed time")
+
+let appended = """
+{"timestamp":"2026-09-11T10:00:00.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":1600,"cached_input_tokens":350,"output_tokens":150,"reasoning_output_tokens":60,"total_tokens":1750},"last_token_usage":{"input_tokens":100,"cached_input_tokens":50,"output_tokens":0,"reasoning_output_tokens":0,"total_tokens":100}},"rate_limits":{"primary":{"used_percent":26,"window_minutes":300,"resets_at":1789128000},"secondary":{"used_percent":7,"window_minutes":10080,"resets_at":1789142400}}}}
+"""
+let firstFile = sessions.appendingPathComponent("first.jsonl")
+let handle = try FileHandle(forWritingTo: firstFile)
+try handle.seekToEnd()
+try handle.write(contentsOf: Data(appended.utf8))
+try handle.close()
+
+let incrementalSnapshot = try UsageScanner.scan(codexHome: root, now: now.addingTimeInterval(120))
+precondition(incrementalSnapshot.totalTokens == 2_300, "expected appended historical usage")
+precondition(incrementalSnapshot.currentCycleUsage.totalTokens == 1_200, "expected appended cycle usage")
+precondition(incrementalSnapshot.historicalModels.first?.usage.totalTokens == 1_750, "expected appended per-model usage")
 
 print("UsageCoreCheck passed: \(snapshot.totalTokens) historical, \(snapshot.currentCycleUsage.totalTokens) current-cycle tokens")

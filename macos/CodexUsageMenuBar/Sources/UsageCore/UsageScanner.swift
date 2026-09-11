@@ -78,6 +78,8 @@ public enum UsageScannerError: LocalizedError {
 
 public enum UsageScanner {
     private static let maximumTranscriptBytes: Int64 = 50 * 1024 * 1024
+    private static let cacheLock = NSLock()
+    private static var sessionCache: [String: CachedSession] = [:]
 
     public static func scan(
         codexHome: URL = FileManager.default.homeDirectoryForCurrentUser
@@ -194,82 +196,135 @@ public enum UsageScanner {
     private static func parseSession(_ file: URL, fileManager: FileManager) -> SessionUsage? {
         guard let attributes = try? fileManager.attributesOfItem(atPath: file.path),
               let size = (attributes[.size] as? NSNumber)?.int64Value,
-              size <= maximumTranscriptBytes,
-              let data = try? Data(contentsOf: file),
-              let text = String(data: data, encoding: .utf8) else { return nil }
+              size <= maximumTranscriptBytes else { return nil }
 
         let modifiedAt = (attributes[.modificationDate] as? Date) ?? Date.distantPast
-        var id: String?
-        var currentModel = "unknown"
-        var currentEffort: String?
-        var contextWindow: Int64 = 0
-        var latestAt: Date?
-        var totalUsage = TokenUsage.zero
-        var events: [UsageEvent] = []
-        var latestDetail: SessionDetail?
-        var latestLimitRecord: LimitRecord?
-        var sawUsage = false
+        let path = file.standardizedFileURL.path
+        let cached = cachedSession(for: path)
 
-        text.enumerateLines { line, _ in
-            guard !line.isEmpty,
-                  let lineData = line.data(using: .utf8),
-                  let record = try? JSONSerialization.jsonObject(with: lineData) as? [String: Any],
-                  let type = record["type"] as? String,
-                  let payload = record["payload"] as? [String: Any] else { return }
-
-            let timestamp = parseTimestamp(record["timestamp"]) ?? modifiedAt
-            latestAt = max(latestAt ?? .distantPast, timestamp)
-
-            if type == "session_meta" {
-                id = nonemptyString(payload["session_id"]) ?? nonemptyString(payload["id"]) ?? id
-                return
-            }
-
-            if type == "turn_context" {
-                currentModel = nonemptyString(payload["model"]) ?? collaborationModel(payload) ?? currentModel
-                currentEffort = nonemptyString(payload["effort"]) ?? collaborationEffort(payload) ?? currentEffort
-                let window = int64(payload["model_context_window"])
-                if window > 0 { contextWindow = window }
-                return
-            }
-
-            guard type == "event_msg",
-                  payload["type"] as? String == "token_count",
-                  let info = payload["info"] as? [String: Any] else { return }
-
-            let window = int64(info["model_context_window"])
-            if window > 0 { contextWindow = window }
-            if let total = info["total_token_usage"] as? [String: Any] {
-                totalUsage = TokenUsage(dictionary: total)
-            }
-            let latest = TokenUsage(dictionary: info["last_token_usage"] as? [String: Any] ?? [:])
-            if latest.hasUsage {
-                events.append(UsageEvent(timestamp: timestamp, model: currentModel, usage: latest))
-            }
-            latestDetail = SessionDetail(
-                timestamp: timestamp,
-                model: currentModel == "unknown" ? nil : currentModel,
-                reasoningEffort: currentEffort,
-                contextWindow: contextWindow,
-                latestUsage: latest
-            )
-            if let rawLimits = payload["rate_limits"] as? [String: Any] {
-                let limits = [rawLimits["primary"], rawLimits["secondary"]].compactMap { parseLimit($0) }
-                if !limits.isEmpty { latestLimitRecord = LimitRecord(timestamp: timestamp, limits: limits) }
-            }
-            sawUsage = true
+        if let cached, cached.size == size, cached.modifiedAt == modifiedAt {
+            return cached.accumulator.session(modifiedAt: modifiedAt)
         }
 
-        guard sawUsage else { return nil }
-        return SessionUsage(
-            id: id,
-            modifiedAt: modifiedAt,
-            latestAt: latestAt,
-            totalUsage: totalUsage,
-            events: events,
-            latestDetail: latestDetail,
-            latestLimitRecord: latestLimitRecord
+        let canReadIncrementally = cached != nil
+            && cached!.size < size
+            && cached!.modifiedAt <= modifiedAt
+        var accumulator = canReadIncrementally ? cached!.accumulator : SessionAccumulator()
+        let offset = canReadIncrementally ? cached!.size : 0
+
+        let byteCount = size - offset
+        guard let data = readData(from: file, offset: offset, byteCount: byteCount),
+              data.count == Int(byteCount),
+              let text = String(data: data, encoding: .utf8) else { return nil }
+
+        consume(text, fallbackTimestamp: modifiedAt, into: &accumulator)
+        guard accumulator.sawUsage else { return nil }
+
+        storeCachedSession(
+            CachedSession(size: size, modifiedAt: modifiedAt, accumulator: accumulator),
+            for: path
         )
+        return accumulator.session(modifiedAt: modifiedAt)
+    }
+
+    private static func readData(from file: URL, offset: Int64, byteCount: Int64) -> Data? {
+        guard byteCount >= 0, byteCount <= Int64(Int.max),
+              let handle = try? FileHandle(forReadingFrom: file) else { return nil }
+        defer { try? handle.close() }
+        do {
+            try handle.seek(toOffset: UInt64(offset))
+            return try handle.read(upToCount: Int(byteCount)) ?? Data()
+        } catch {
+            return nil
+        }
+    }
+
+    private static func consume(
+        _ text: String,
+        fallbackTimestamp: Date,
+        into accumulator: inout SessionAccumulator
+    ) {
+        var working = accumulator
+        text.enumerateLines { line, _ in
+            consumeLine(line, fallbackTimestamp: fallbackTimestamp, into: &working)
+        }
+        accumulator = working
+    }
+
+    private static func consumeLine(
+        _ line: String,
+        fallbackTimestamp: Date,
+        into accumulator: inout SessionAccumulator
+    ) {
+        guard !line.isEmpty,
+              let lineData = line.data(using: .utf8),
+              let record = try? JSONSerialization.jsonObject(with: lineData) as? [String: Any],
+              let type = record["type"] as? String,
+              let payload = record["payload"] as? [String: Any] else { return }
+
+        let timestamp = parseTimestamp(record["timestamp"]) ?? fallbackTimestamp
+        accumulator.latestAt = max(accumulator.latestAt ?? .distantPast, timestamp)
+
+        if type == "session_meta" {
+            accumulator.id = nonemptyString(payload["session_id"])
+                ?? nonemptyString(payload["id"])
+                ?? accumulator.id
+            return
+        }
+
+        if type == "turn_context" {
+            accumulator.currentModel = nonemptyString(payload["model"])
+                ?? collaborationModel(payload)
+                ?? accumulator.currentModel
+            accumulator.currentEffort = nonemptyString(payload["effort"])
+                ?? collaborationEffort(payload)
+                ?? accumulator.currentEffort
+            let window = int64(payload["model_context_window"])
+            if window > 0 { accumulator.contextWindow = window }
+            return
+        }
+
+        guard type == "event_msg",
+              payload["type"] as? String == "token_count",
+              let info = payload["info"] as? [String: Any] else { return }
+
+        let window = int64(info["model_context_window"])
+        if window > 0 { accumulator.contextWindow = window }
+        if let total = info["total_token_usage"] as? [String: Any] {
+            accumulator.totalUsage = TokenUsage(dictionary: total)
+        }
+        let latest = TokenUsage(dictionary: info["last_token_usage"] as? [String: Any] ?? [:])
+        if latest.hasUsage {
+            accumulator.events.append(
+                UsageEvent(timestamp: timestamp, model: accumulator.currentModel, usage: latest)
+            )
+        }
+        accumulator.latestDetail = SessionDetail(
+            timestamp: timestamp,
+            model: accumulator.currentModel == "unknown" ? nil : accumulator.currentModel,
+            reasoningEffort: accumulator.currentEffort,
+            contextWindow: accumulator.contextWindow,
+            latestUsage: latest
+        )
+        if let rawLimits = payload["rate_limits"] as? [String: Any] {
+            let limits = [rawLimits["primary"], rawLimits["secondary"]].compactMap { parseLimit($0) }
+            if !limits.isEmpty {
+                accumulator.latestLimitRecord = LimitRecord(timestamp: timestamp, limits: limits)
+            }
+        }
+        accumulator.sawUsage = true
+    }
+
+    private static func cachedSession(for path: String) -> CachedSession? {
+        cacheLock.lock()
+        defer { cacheLock.unlock() }
+        return sessionCache[path]
+    }
+
+    private static func storeCachedSession(_ session: CachedSession, for path: String) {
+        cacheLock.lock()
+        sessionCache[path] = session
+        cacheLock.unlock()
     }
 
     private static func collaborationModel(_ payload: [String: Any]) -> String? {
@@ -415,6 +470,38 @@ private struct SessionUsage {
     let events: [UsageEvent]
     let latestDetail: SessionDetail?
     let latestLimitRecord: LimitRecord?
+}
+
+private struct CachedSession {
+    let size: Int64
+    let modifiedAt: Date
+    let accumulator: SessionAccumulator
+}
+
+private struct SessionAccumulator {
+    var id: String?
+    var currentModel = "unknown"
+    var currentEffort: String?
+    var contextWindow: Int64 = 0
+    var latestAt: Date?
+    var totalUsage = TokenUsage.zero
+    var events: [UsageEvent] = []
+    var latestDetail: SessionDetail?
+    var latestLimitRecord: LimitRecord?
+    var sawUsage = false
+
+    func session(modifiedAt: Date) -> SessionUsage? {
+        guard sawUsage else { return nil }
+        return SessionUsage(
+            id: id,
+            modifiedAt: modifiedAt,
+            latestAt: latestAt,
+            totalUsage: totalUsage,
+            events: events,
+            latestDetail: latestDetail,
+            latestLimitRecord: latestLimitRecord
+        )
+    }
 }
 
 private struct UsageEvent {
