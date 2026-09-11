@@ -60,6 +60,10 @@ private struct Copy {
     var refreshing: String { text("正在刷新…", "Refreshing…") }
     var autoRefreshTitle: String { text("自动刷新", "Auto refresh") }
     var settings: String { text("设置", "Settings") }
+    var historicalUsageSetting: String { text("统计历史累计", "Calculate all-time usage") }
+    var refreshHistory: String { text("重新统计历史", "Recalculate history") }
+    var calculatingHistory: String { text("正在后台统计历史…", "Calculating history in background…") }
+    var historyDisabled: String { text("可在设置中开启历史累计", "Enable all-time usage in Settings") }
     var launchAtLogin: String { text("登录时启动", "Launch at login") }
     var notifications: String { text("用量提醒", "Usage alerts") }
     var demoMode: String { text("演示模式", "Demo mode") }
@@ -166,6 +170,7 @@ private struct Copy {
 private final class UsageStore: NSObject, ObservableObject {
     @Published var snapshot: UsageSnapshot?
     @Published var isRefreshing = false
+    @Published var isLoadingHistory = false
     @Published var errorMessage: String?
 
     private var timer: Timer?
@@ -174,21 +179,42 @@ private final class UsageStore: NSObject, ObservableObject {
     private var notificationThreshold = 0
     private var isChinese = true
     private var demoMode = false
+    private var historicalUsageEnabled = false
     private var refreshGeneration = 0
+    private var historyGeneration = 0
+
+    private let historyRefreshInterval: TimeInterval = 24 * 60 * 60
+    private let historyUpdatedDefaultsKey = "historicalUsage.lastCalculatedAt"
 
     func start(
         autoRefreshMinutes: Int,
         notificationThreshold: Int,
         isChinese: Bool,
-        demoMode: Bool
+        demoMode: Bool,
+        historicalUsageEnabled: Bool
     ) {
-        let shouldRefresh = !hasStarted
+        guard !hasStarted else { return }
         hasStarted = true
-        setAutoRefresh(minutes: autoRefreshMinutes)
-        setNotificationThreshold(notificationThreshold)
         self.isChinese = isChinese
         self.demoMode = demoMode
-        if shouldRefresh { refresh() }
+        self.historicalUsageEnabled = historicalUsageEnabled
+        setAutoRefresh(minutes: autoRefreshMinutes)
+        setNotificationThreshold(notificationThreshold)
+
+        if demoMode {
+            snapshot = .demo()
+            return
+        }
+
+        snapshot = UsageSnapshotCache.load()
+        if snapshot == nil {
+            refresh()
+        } else {
+            refreshIfNeeded()
+            if historicalUsageEnabled && historyNeedsRefresh {
+                refreshHistory()
+            }
+        }
     }
 
     func setAutoRefresh(minutes: Int) {
@@ -225,11 +251,13 @@ private final class UsageStore: NSObject, ObservableObject {
 
         Task {
             do {
-                let refreshedSnapshot = try await Task.detached(priority: .utility) {
-                    try UsageScanner.scan()
+                let currentSnapshot = try await Task.detached(priority: .userInitiated) {
+                    try UsageScanner.scanCurrentCycle()
                 }.value
                 guard generation == refreshGeneration else { return }
+                let refreshedSnapshot = currentSnapshot.preservingHistorical(from: snapshot)
                 snapshot = refreshedSnapshot
+                UsageSnapshotCache.save(refreshedSnapshot)
                 let threshold = notificationThreshold
                 let notificationLanguage = isChinese
                 Task {
@@ -244,15 +272,59 @@ private final class UsageStore: NSObject, ObservableObject {
                 errorMessage = error.localizedDescription
             }
             isRefreshing = false
+            if historicalUsageEnabled && (snapshot?.historicalIncluded != true || historyNeedsRefresh) {
+                refreshHistory()
+            }
         }
     }
 
-    func refreshIfStale(maxAge: TimeInterval = 30) {
+    func refreshIfNeeded() {
+        guard let autoRefreshMinutes, autoRefreshMinutes > 0 else { return }
+        let maxAge = TimeInterval(autoRefreshMinutes * 60)
         guard let updatedAt = snapshot?.updatedAt else {
             refresh()
             return
         }
         if Date().timeIntervalSince(updatedAt) >= maxAge { refresh() }
+    }
+
+    func setHistoricalUsageEnabled(_ enabled: Bool) {
+        guard historicalUsageEnabled != enabled else { return }
+        historicalUsageEnabled = enabled
+        if enabled {
+            if snapshot?.historicalIncluded != true || historyNeedsRefresh {
+                refreshHistory()
+            }
+        } else {
+            historyGeneration += 1
+            isLoadingHistory = false
+        }
+    }
+
+    func refreshHistory(force: Bool = false) {
+        guard historicalUsageEnabled, !demoMode, !isLoadingHistory else { return }
+        if !force, snapshot?.historicalIncluded == true, !historyNeedsRefresh { return }
+
+        historyGeneration += 1
+        let generation = historyGeneration
+        isLoadingHistory = true
+        Task {
+            do {
+                let historicalSnapshot = try await Task.detached(priority: .background) {
+                    try UsageScanner.scan()
+                }.value
+                guard generation == historyGeneration, historicalUsageEnabled, !demoMode else { return }
+                let combinedSnapshot = snapshot?.applyingHistorical(from: historicalSnapshot) ?? historicalSnapshot
+                snapshot = combinedSnapshot
+                UsageSnapshotCache.save(combinedSnapshot)
+                UserDefaults.standard.set(Date(), forKey: historyUpdatedDefaultsKey)
+            } catch {
+                guard generation == historyGeneration else { return }
+                errorMessage = error.localizedDescription
+            }
+            guard generation == historyGeneration else { return }
+            isLoadingHistory = false
+        }
     }
 
     func setNotificationThreshold(_ threshold: Int) {
@@ -278,18 +350,32 @@ private final class UsageStore: NSObject, ObservableObject {
         guard demoMode != enabled else { return }
         demoMode = enabled
         refreshGeneration += 1
+        historyGeneration += 1
         isRefreshing = false
+        isLoadingHistory = false
         errorMessage = nil
         if enabled {
             snapshot = .demo()
         } else {
-            snapshot = nil
-            refresh()
+            snapshot = UsageSnapshotCache.load()
+            if snapshot == nil {
+                refresh()
+            } else {
+                refreshIfNeeded()
+                if historicalUsageEnabled && historyNeedsRefresh { refreshHistory() }
+            }
         }
     }
 
     func reportError(_ message: String) {
         errorMessage = message
+    }
+
+    private var historyNeedsRefresh: Bool {
+        guard let updatedAt = UserDefaults.standard.object(forKey: historyUpdatedDefaultsKey) as? Date else {
+            return true
+        }
+        return Date().timeIntervalSince(updatedAt) >= historyRefreshInterval
     }
 
     @objc private func scheduledRefresh() { refresh() }
@@ -439,6 +525,7 @@ private struct UsageMenuView: View {
     @AppStorage("autoRefreshMinutes") private var autoRefreshMinutes = AutoRefreshInterval.tenMinutes.rawValue
     @AppStorage("notificationThreshold") private var notificationThreshold = NotificationThreshold.off.rawValue
     @AppStorage("demoMode") private var demoMode = false
+    @AppStorage("historicalUsageEnabled") private var historicalUsageEnabled = false
     @State private var modelScope = ModelUsageScope.currentCycle
     @State private var launchAtLogin = LaunchAtLoginService.isEnabled
     @StateObject private var updateChecker = UpdateChecker()
@@ -475,10 +562,11 @@ private struct UsageMenuView: View {
                 autoRefreshMinutes: autoRefreshMinutes,
                 notificationThreshold: notificationThreshold,
                 isChinese: language == .chinese,
-                demoMode: demoMode
+                demoMode: demoMode,
+                historicalUsageEnabled: historicalUsageEnabled
             )
         }
-        .onAppear { store.refreshIfStale() }
+        .onAppear { store.refreshIfNeeded() }
         .onChange(of: autoRefreshMinutes) { newValue in
             store.setAutoRefresh(minutes: newValue)
         }
@@ -491,8 +579,12 @@ private struct UsageMenuView: View {
         .onChange(of: demoMode) { newValue in
             store.setDemoMode(newValue)
         }
+        .onChange(of: historicalUsageEnabled) { newValue in
+            if !newValue { modelScope = .currentCycle }
+            store.setHistoricalUsageEnabled(newValue)
+        }
         .onReceive(NSWorkspace.shared.notificationCenter.publisher(for: NSWorkspace.didWakeNotification)) { _ in
-            store.refresh()
+            store.refreshIfNeeded()
         }
     }
 
@@ -541,19 +633,27 @@ private struct UsageMenuView: View {
             }
 
             HStack(alignment: .top, spacing: 10) {
-                SummaryCard(
-                    eyebrow: copy.historical,
-                    title: copy.totalTokens,
-                    tokens: formatFullTokens(snapshot.historicalUsage.totalTokens),
-                    costTitle: copy.apiCost,
-                    cost: formatCost(snapshot.historicalApiEquivalentUSD, complete: snapshot.historicalCostIsComplete),
-                    footnote: "\(snapshot.sessionCount) \(copy.sessions)",
-                    tint: .blue
-                )
+                if historicalUsageEnabled {
+                    SummaryCard(
+                        eyebrow: copy.historical,
+                        title: copy.totalTokens,
+                        tokens: snapshot.historicalIncluded
+                            ? formatCompactTokens(snapshot.historicalUsage.totalTokens)
+                            : "…",
+                        costTitle: copy.apiCost,
+                        cost: snapshot.historicalIncluded
+                            ? formatCost(snapshot.historicalApiEquivalentUSD, complete: snapshot.historicalCostIsComplete)
+                            : copy.unavailable,
+                        footnote: store.isLoadingHistory
+                            ? copy.calculatingHistory
+                            : (snapshot.historicalIncluded ? "\(snapshot.sessionCount) \(copy.sessions)" : copy.historyDisabled),
+                        tint: .blue
+                    )
+                }
                 SummaryCard(
                     eyebrow: snapshot.currentCycle.map { "\(copy.currentCycle) · \($0.label)" } ?? copy.currentCycle,
                     title: copy.totalTokens,
-                    tokens: formatFullTokens(snapshot.currentCycleUsage.totalTokens),
+                    tokens: formatCompactTokens(snapshot.currentCycleUsage.totalTokens),
                     costTitle: copy.apiCost,
                     cost: formatCost(snapshot.currentCycleApiEquivalentUSD, complete: snapshot.currentCycleCostIsComplete),
                     footnote: snapshot.currentCycle.map { copy.period($0.startsAt, $0.resetsAt) } ?? copy.noCycle,
@@ -616,15 +716,18 @@ private struct UsageMenuView: View {
     @ViewBuilder
     private func modelUsageSection(_ snapshot: UsageSnapshot) -> some View {
         sectionHeader(copy.modelUsage, subtitle: nil)
-        Picker("", selection: $modelScope) {
-            ForEach(ModelUsageScope.allCases) { scope in
-                Text(copy.scope(scope)).tag(scope)
+        if historicalUsageEnabled {
+            Picker("", selection: $modelScope) {
+                ForEach(ModelUsageScope.allCases) { scope in
+                    Text(copy.scope(scope)).tag(scope)
+                }
             }
+            .labelsHidden()
+            .pickerStyle(.segmented)
         }
-        .labelsHidden()
-        .pickerStyle(.segmented)
 
-        let models = modelScope == .currentCycle ? snapshot.currentCycleModels : snapshot.historicalModels
+        let showHistory = historicalUsageEnabled && modelScope == .historical
+        let models = showHistory ? snapshot.historicalModels : snapshot.currentCycleModels
         if models.isEmpty {
             Text(copy.noModelUsage)
                 .font(.caption)
@@ -688,6 +791,19 @@ private struct UsageMenuView: View {
 
             Toggle(copy.demoMode, isOn: $demoMode)
 
+            Toggle(copy.historicalUsageSetting, isOn: $historicalUsageEnabled)
+            if historicalUsageEnabled {
+                Button {
+                    store.refreshHistory(force: true)
+                } label: {
+                    Label(
+                        store.isLoadingHistory ? copy.calculatingHistory : copy.refreshHistory,
+                        systemImage: "clock.arrow.circlepath"
+                    )
+                }
+                .disabled(store.isLoadingHistory || demoMode)
+            }
+
             Picker(copy.notifications, selection: $notificationThreshold) {
                 ForEach(NotificationThreshold.allCases) { threshold in
                     Text(copy.notificationOption(threshold: threshold.rawValue)).tag(threshold.rawValue)
@@ -731,24 +847,8 @@ private struct UsageMenuView: View {
         }
     }
 
-    private func formatFullTokens(_ value: Int64) -> String {
-        let formatter = NumberFormatter()
-        formatter.numberStyle = .decimal
-        formatter.locale = Locale(identifier: language == .chinese ? "zh_Hans_CN" : "en_US")
-        return formatter.string(from: NSNumber(value: value)) ?? String(value)
-    }
-
     private func formatCompactTokens(_ value: Int64) -> String {
-        let amount = Double(value)
-        if value >= 1_000_000_000 { return compact(amount / 1_000_000_000, suffix: "B") }
-        if value >= 1_000_000 { return compact(amount / 1_000_000, suffix: "M") }
-        if value >= 1_000 { return compact(amount / 1_000, suffix: "K") }
-        return String(value)
-    }
-
-    private func compact(_ value: Double, suffix: String) -> String {
-        let digits = value >= 100 ? 0 : (value >= 10 ? 1 : 2)
-        return String(format: "%.*f%@", digits, value, suffix)
+        TokenFormatter.compact(value)
     }
 
     private func formatPercent(_ value: Double?) -> String {

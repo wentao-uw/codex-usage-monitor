@@ -98,6 +98,7 @@ public extension UsageSnapshot {
                     costIsComplete: true
                 ),
             ],
+            historicalIncluded: true,
             latestModel: "gpt-5.6-sol",
             latestReasoningEffort: "high",
             latestContextUsedPercent: 17.1,

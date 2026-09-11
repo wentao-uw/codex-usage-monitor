@@ -37,6 +37,12 @@ It also sums each `last_token_usage` into a per-model bucket using the most
 recent `turn_context.model`, which gives a useful cost breakdown when a session
 switches models.
 
+The macOS app has two scan paths. Its default fast path locates the latest
+rolling window and parses only session files that can contribute to the current
+cycle. All-time history is opt-in and runs at background priority. An
+aggregate-only `UsageSnapshot` is stored under Application Support so the menu
+can render before any due refresh; raw JSONL records are never copied there.
+
 ## Module Layout
 
 ```text

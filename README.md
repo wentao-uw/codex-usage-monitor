@@ -35,12 +35,12 @@ Codex shows useful information for the current task, but it is hard to answer br
 
 | At a glance | What you get |
 | --- | --- |
-| **All-time local usage** | Total tokens and API-equivalent cost across every local session found on this Mac. |
+| **Optional all-time usage** | Enable it when needed; the slower full-history calculation runs in the background and its aggregate is reused across launches. |
 | **Current rolling cycle** | Tokens since the start of the longest active Codex limit window, normally 7 days. |
 | **Token breakdown** | Input, cached input, output, reasoning, cache hit rate, and current context fill. |
 | **Usage by model** | Per-model totals, token composition, and estimated API-equivalent cost for the current cycle or all time. |
 | **Rolling limits** | Usage percentage and reset time for every limit reported in local logs. |
-| **Fast refresh** | Refresh manually or choose Off, 1, 5, 10, 15, 30, or 60 minutes; unchanged sessions stay cached and active logs are read incrementally. |
+| **Fast refresh** | Current-cycle data is scanned first; the last aggregate snapshot appears immediately and active logs are read incrementally. |
 | **Useful alerts** | Optionally notify at 50%, 75%, or 90% of a rolling limit, once per limit window. |
 | **Mac-native controls** | Launch at login, refresh after wake, bilingual UI, and a safe fictional-data demo mode. |
 
@@ -55,11 +55,11 @@ npm run build:macos
 open "dist/Codex Usage Monitor.app"
 ```
 
-Click the chart icon in the macOS menu bar. The first launch scans your local history; later refreshes reuse cached session results and only read newly appended log data.
+Click the chart icon in the macOS menu bar. Current-cycle usage is shown first. The app saves only an aggregate snapshot, so later launches can render immediately while a due refresh runs in the background.
 
 Use the interval menu in the footer to choose **Off, 1, 5, 10, 15, 30, or 60 minutes**. The selection is saved automatically, and manual refresh remains available at any time. Opening the menu after a while or waking the Mac also refreshes stale data.
 
-Open **Settings** in the app footer to enable launch at login, rolling-limit notifications, demo mode, or a manual update check. Update checks happen only when you click the command.
+All-time history is disabled by default because it requires a wider scan. Enable **Calculate all-time usage** in **Settings** when you need it; calculation runs at background priority, is cached across launches, and is refreshed at most once per day unless you explicitly choose **Recalculate history**. Settings also contains launch at login, rolling-limit notifications, demo mode, and the manual update check.
 
 Release builds are ad-hoc signed for transparent open-source distribution and are not Developer ID notarized. Depending on your Gatekeeper settings, the first launch may require Control-clicking the app and choosing **Open**.
 
@@ -79,7 +79,7 @@ These are local-log totals. They can differ from account-wide usage when you use
 - Makes no background network requests and sends no logs, tokens, or account data anywhere.
 - Contacts GitHub's public Releases API only when you explicitly choose **Check for Updates**.
 - Includes no telemetry or analytics SDK.
-- Stores refresh preferences and notification de-duplication locally in macOS user defaults; parsed session data is kept only in the app process.
+- Stores refresh preferences and notification de-duplication in macOS user defaults, plus an aggregate-only usage snapshot under Application Support for instant startup. Raw session contents are not copied into the cache.
 - Does not need your OpenAI API key.
 
 You can inspect the scanner in [`UsageScanner.swift`](macos/CodexUsageMenuBar/Sources/UsageCore/UsageScanner.swift) and the Node parser in [`session.js`](lib/session.js).

@@ -5,6 +5,40 @@ import ServiceManagement
 import UserNotifications
 import UsageCore
 
+enum UsageSnapshotCache {
+    private static let fileManager = FileManager.default
+
+    private static var fileURL: URL? {
+        guard let applicationSupport = fileManager.urls(
+            for: .applicationSupportDirectory,
+            in: .userDomainMask
+        ).first else { return nil }
+        return applicationSupport
+            .appendingPathComponent("Codex Usage Monitor", isDirectory: true)
+            .appendingPathComponent("usage-snapshot.json")
+    }
+
+    static func load() -> UsageSnapshot? {
+        guard let fileURL,
+              let data = try? Data(contentsOf: fileURL) else { return nil }
+        return try? JSONDecoder().decode(UsageSnapshot.self, from: data)
+    }
+
+    static func save(_ snapshot: UsageSnapshot) {
+        guard let fileURL,
+              let data = try? JSONEncoder().encode(snapshot) else { return }
+        do {
+            try fileManager.createDirectory(
+                at: fileURL.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
+            try data.write(to: fileURL, options: .atomic)
+        } catch {
+            return
+        }
+    }
+}
+
 enum NotificationThreshold: Int, CaseIterable, Identifiable {
     case off = 0
     case fifty = 50

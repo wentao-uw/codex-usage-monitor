@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- Make all-time history optional and disabled by default, while keeping current-cycle usage on the fast path.
+- Calculate enabled history at background priority and reuse its cached aggregate across launches.
+- Persist the last aggregate snapshot so the menu can render immediately instead of blocking on a new scan.
+- Compact large summary totals automatically with K, M, and B suffixes.
+
 ## 0.2.0 - 2026-09-11
 
 - Add a local MCP server with a `show_usage` tool.

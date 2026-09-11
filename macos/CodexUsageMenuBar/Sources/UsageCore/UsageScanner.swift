@@ -1,6 +1,6 @@
 import Foundation
 
-public struct TokenUsageSnapshot: Equatable, Sendable {
+public struct TokenUsageSnapshot: Codable, Equatable, Sendable {
     public let inputTokens: Int64
     public let cachedInputTokens: Int64
     public let outputTokens: Int64
@@ -27,14 +27,14 @@ public struct TokenUsageSnapshot: Equatable, Sendable {
     }
 }
 
-public struct ModelUsageSnapshot: Equatable, Sendable {
+public struct ModelUsageSnapshot: Codable, Equatable, Sendable {
     public let modelID: String
     public let usage: TokenUsageSnapshot
     public let apiEquivalentUSD: Double?
     public let costIsComplete: Bool
 }
 
-public struct UsageLimitSnapshot: Equatable, Sendable {
+public struct UsageLimitSnapshot: Codable, Equatable, Sendable {
     public let label: String
     public let usedPercent: Double
     public let windowMinutes: Int
@@ -42,7 +42,7 @@ public struct UsageLimitSnapshot: Equatable, Sendable {
     public let resetsAt: Date
 }
 
-public struct UsageSnapshot: Equatable, Sendable {
+public struct UsageSnapshot: Codable, Equatable, Sendable {
     public let historicalUsage: TokenUsageSnapshot
     public let currentCycleUsage: TokenUsageSnapshot
     public let historicalApiEquivalentUSD: Double?
@@ -53,6 +53,7 @@ public struct UsageSnapshot: Equatable, Sendable {
     public let rateLimits: [UsageLimitSnapshot]
     public let historicalModels: [ModelUsageSnapshot]
     public let currentCycleModels: [ModelUsageSnapshot]
+    public let historicalIncluded: Bool
     public let latestModel: String?
     public let latestReasoningEffort: String?
     public let latestContextUsedPercent: Double?
@@ -63,6 +64,33 @@ public struct UsageSnapshot: Equatable, Sendable {
     public var totalTokens: Int64 { historicalUsage.totalTokens }
     public var apiEquivalentUSD: Double? { historicalApiEquivalentUSD }
     public var costIsComplete: Bool { historicalCostIsComplete }
+
+    public func preservingHistorical(from cached: UsageSnapshot?) -> UsageSnapshot {
+        guard !historicalIncluded, let cached, cached.historicalIncluded else { return self }
+        return applyingHistorical(from: cached)
+    }
+
+    public func applyingHistorical(from completed: UsageSnapshot) -> UsageSnapshot {
+        return UsageSnapshot(
+            historicalUsage: completed.historicalUsage,
+            currentCycleUsage: currentCycleUsage,
+            historicalApiEquivalentUSD: completed.historicalApiEquivalentUSD,
+            historicalCostIsComplete: completed.historicalCostIsComplete,
+            currentCycleApiEquivalentUSD: currentCycleApiEquivalentUSD,
+            currentCycleCostIsComplete: currentCycleCostIsComplete,
+            currentCycle: currentCycle,
+            rateLimits: rateLimits,
+            historicalModels: completed.historicalModels,
+            currentCycleModels: currentCycleModels,
+            historicalIncluded: true,
+            latestModel: latestModel,
+            latestReasoningEffort: latestReasoningEffort,
+            latestContextUsedPercent: latestContextUsedPercent,
+            sessionCount: completed.sessionCount,
+            latestActivityAt: latestActivityAt,
+            updatedAt: updatedAt
+        )
+    }
 }
 
 public enum UsageScannerError: LocalizedError {
@@ -86,6 +114,22 @@ public enum UsageScanner {
             .appendingPathComponent(".codex", isDirectory: true),
         now: Date = Date()
     ) throws -> UsageSnapshot {
+        try scan(codexHome: codexHome, now: now, includeHistorical: true)
+    }
+
+    public static func scanCurrentCycle(
+        codexHome: URL = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".codex", isDirectory: true),
+        now: Date = Date()
+    ) throws -> UsageSnapshot {
+        try scan(codexHome: codexHome, now: now, includeHistorical: false)
+    }
+
+    private static func scan(
+        codexHome: URL,
+        now: Date,
+        includeHistorical: Bool
+    ) throws -> UsageSnapshot {
         let fileManager = FileManager.default
         var isDirectory: ObjCBool = false
         guard fileManager.fileExists(atPath: codexHome.path, isDirectory: &isDirectory), isDirectory.boolValue else {
@@ -96,16 +140,19 @@ public enum UsageScanner {
             .map { codexHome.appendingPathComponent($0, isDirectory: true) }
             .filter { fileManager.fileExists(atPath: $0.path) }
 
+        let allFiles = roots.flatMap { jsonlFiles(below: $0, fileManager: fileManager) }
+        let filesToParse = includeHistorical
+            ? allFiles
+            : currentCycleFiles(from: allFiles, now: now, fileManager: fileManager)
+
         var sessionsByID: [String: SessionUsage] = [:]
-        for root in roots {
-            for file in jsonlFiles(below: root, fileManager: fileManager) {
+        for file in filesToParse {
                 guard let session = parseSession(file, fileManager: fileManager) else { continue }
                 let key = session.id ?? file.standardizedFileURL.path
                 if let existing = sessionsByID[key], existing.modifiedAt >= session.modifiedAt {
                     continue
                 }
                 sessionsByID[key] = session
-            }
         }
 
         var historicalUsage = TokenUsage.zero
@@ -116,11 +163,13 @@ public enum UsageScanner {
         var latestLimitRecord: LimitRecord?
 
         for session in sessionsByID.values {
-            historicalUsage.add(session.totalUsage)
+            if includeHistorical { historicalUsage.add(session.totalUsage) }
             latestUpdate = max(latestUpdate, session.latestAt ?? session.modifiedAt)
             allEvents.append(contentsOf: session.events)
             for event in session.events {
-                historicalModelUsage[event.model, default: .zero].add(event.usage)
+                if includeHistorical {
+                    historicalModelUsage[event.model, default: .zero].add(event.usage)
+                }
             }
             if let detail = session.latestDetail,
                latestDetail == nil || detail.timestamp > latestDetail!.timestamp {
@@ -168,6 +217,7 @@ public enum UsageScanner {
             rateLimits: effectiveLimits,
             historicalModels: historicalModels,
             currentCycleModels: currentCycleModels,
+            historicalIncluded: includeHistorical,
             latestModel: latestDetail?.model,
             latestReasoningEffort: latestDetail?.reasoningEffort,
             latestContextUsedPercent: contextPercent,
@@ -175,6 +225,36 @@ public enum UsageScanner {
             latestActivityAt: latestUpdate == .distantPast ? nil : latestUpdate,
             updatedAt: now
         )
+    }
+
+    private static func currentCycleFiles(
+        from files: [URL],
+        now: Date,
+        fileManager: FileManager
+    ) -> [URL] {
+        let datedFiles = files.compactMap { file -> (URL, Date)? in
+            guard let attributes = try? fileManager.attributesOfItem(atPath: file.path) else { return nil }
+            return (file, (attributes[.modificationDate] as? Date) ?? .distantPast)
+        }
+        .sorted { $0.1 > $1.1 }
+
+        var probeFiles: [URL] = []
+        var discoveredCycle: UsageLimitSnapshot?
+        for (file, _) in datedFiles.prefix(25) {
+            probeFiles.append(file)
+            guard let session = parseSession(file, fileManager: fileManager),
+                  let record = session.latestLimitRecord else { continue }
+            discoveredCycle = record.limits
+                .map { effectiveLimit($0, now: now) }
+                .max { $0.windowMinutes < $1.windowMinutes }
+            if discoveredCycle != nil { break }
+        }
+
+        guard let cycle = discoveredCycle else { return probeFiles }
+        let recentFiles = datedFiles.lazy
+            .filter { $0.1 >= cycle.startsAt }
+            .map(\.0)
+        return Array(Set(probeFiles + recentFiles))
     }
 
     private static func jsonlFiles(below root: URL, fileManager: FileManager) -> [URL] {

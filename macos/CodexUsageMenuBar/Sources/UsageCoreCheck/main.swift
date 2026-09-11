@@ -2,6 +2,9 @@ import Foundation
 import UsageCore
 
 if CommandLine.arguments.contains("--live") {
+    let currentStartedAt = Date()
+    let currentSnapshot = try UsageScanner.scanCurrentCycle()
+    let currentDuration = Date().timeIntervalSince(currentStartedAt)
     let coldStartedAt = Date()
     let snapshot = try UsageScanner.scan()
     let coldDuration = Date().timeIntervalSince(coldStartedAt)
@@ -11,7 +14,7 @@ if CommandLine.arguments.contains("--live") {
     let cost = snapshot.apiEquivalentUSD.map { String(format: "%.6f", $0) } ?? "unavailable"
     let cycle = snapshot.currentCycle.map { "\($0.label): \(snapshot.currentCycleUsage.totalTokens) tokens" } ?? "cycle unavailable"
     let warmDelta = warmSnapshot.totalTokens - snapshot.totalTokens
-    print("Live scan passed: \(warmSnapshot.totalTokens) historical tokens, \(cycle), \(warmSnapshot.currentCycleModels.count)/\(warmSnapshot.historicalModels.count) cycle/history models, API≈$\(cost), \(warmSnapshot.sessionCount) sessions, cold \(String(format: "%.3fs", coldDuration)), warm \(String(format: "%.3fs", warmDuration)), warm delta \(warmDelta)")
+    print("Live scan passed: \(currentSnapshot.currentCycleUsage.totalTokens) current-cycle tokens in \(String(format: "%.3fs", currentDuration)); \(warmSnapshot.totalTokens) historical tokens, \(cycle), \(warmSnapshot.currentCycleModels.count)/\(warmSnapshot.historicalModels.count) cycle/history models, API≈$\(cost), \(warmSnapshot.sessionCount) sessions, full cold \(String(format: "%.3fs", coldDuration)), warm \(String(format: "%.3fs", warmDuration)), warm delta \(warmDelta)")
     exit(EXIT_SUCCESS)
 }
 
@@ -39,6 +42,11 @@ try first.write(to: sessions.appendingPathComponent("first.jsonl"), atomically: 
 try second.write(to: sessions.appendingPathComponent("second.jsonl"), atomically: true, encoding: .utf8)
 
 let now = ISO8601DateFormatter().date(from: "2026-09-11T12:00:00Z")!
+precondition(TokenFormatter.compact(999) == "999", "expected small token count without suffix")
+precondition(TokenFormatter.compact(1_000) == "1K", "expected K token suffix")
+precondition(TokenFormatter.compact(12_340) == "12.3K", "expected compact K precision")
+precondition(TokenFormatter.compact(3_842_910) == "3.84M", "expected M token suffix")
+precondition(TokenFormatter.compact(4_484_577_500) == "4.48B", "expected B token suffix")
 let demo = UsageSnapshot.demo(now: now)
 precondition(demo.totalTokens == 128_450_320, "expected stable fictional historical total")
 precondition(demo.currentCycleUsage.totalTokens == 3_842_910, "expected stable fictional cycle total")
@@ -47,6 +55,7 @@ precondition(demo.rateLimits.map(\.label) == ["5h", "7d"], "expected fictional r
 precondition(demo.updatedAt == now, "expected demo refresh time to follow the supplied clock")
 
 let snapshot = try UsageScanner.scan(codexHome: root, now: now)
+precondition(snapshot.historicalIncluded, "expected the full scan to include history")
 precondition(snapshot.totalTokens == 2_200, "expected 2,200 tokens, got \(snapshot.totalTokens)")
 precondition(snapshot.sessionCount == 2, "expected two sessions")
 precondition(snapshot.costIsComplete, "expected complete pricing")
@@ -68,6 +77,17 @@ precondition(snapshot.historicalModels.first?.modelID == "gpt-5.5", "expected mo
 precondition(snapshot.historicalModels.first?.usage.totalTokens == 1_650, "expected per-model historical usage")
 precondition(Set(snapshot.currentCycleModels.map(\.modelID)) == Set(["gpt-5.5", "gpt-5.4-mini"]), "expected current-cycle models")
 precondition(snapshot.currentCycleModels.allSatisfy { $0.usage.totalTokens == 550 }, "expected per-model cycle usage")
+let currentOnlySnapshot = try UsageScanner.scanCurrentCycle(codexHome: root, now: now)
+precondition(!currentOnlySnapshot.historicalIncluded, "expected the fast scan to omit history")
+precondition(currentOnlySnapshot.historicalUsage.totalTokens == 0, "expected no historical aggregation in fast scan")
+precondition(currentOnlySnapshot.currentCycleUsage.totalTokens == 1_100, "expected fast current-cycle total")
+precondition(currentOnlySnapshot.currentCycleModels.count == 2, "expected fast per-model cycle usage")
+let restoredSnapshot = currentOnlySnapshot.preservingHistorical(from: snapshot)
+precondition(restoredSnapshot.historicalUsage == snapshot.historicalUsage, "expected cached history to be preserved")
+precondition(restoredSnapshot.currentCycleUsage == currentOnlySnapshot.currentCycleUsage, "expected fresh cycle usage to win")
+let encodedSnapshot = try JSONEncoder().encode(restoredSnapshot)
+let decodedSnapshot = try JSONDecoder().decode(UsageSnapshot.self, from: encodedSnapshot)
+precondition(decodedSnapshot == restoredSnapshot, "expected snapshot cache round trip")
 let refreshedSnapshot = try UsageScanner.scan(codexHome: root, now: now.addingTimeInterval(60))
 precondition(refreshedSnapshot.updatedAt > snapshot.updatedAt, "expected manual refresh to advance displayed time")
 
