@@ -22,7 +22,7 @@
 
 <p align="center">
   <strong>Native macOS menu bar app · Codex Desktop card · CLI · Stop hooks</strong><br>
-  English / 中文 · configurable auto-refresh · fast incremental scans
+  English / 中文 · configurable auto-refresh · limit alerts · fast incremental scans
 </p>
 
 ![Codex Usage Monitor macOS interface with fictional demo data](docs/assets/menu-bar-preview.png)
@@ -41,10 +41,12 @@ Codex shows useful information for the current task, but it is hard to answer br
 | **Usage by model** | Per-model totals, token composition, and estimated API-equivalent cost for the current cycle or all time. |
 | **Rolling limits** | Usage percentage and reset time for every limit reported in local logs. |
 | **Fast refresh** | Refresh manually or choose Off, 1, 5, 10, 15, 30, or 60 minutes; unchanged sessions stay cached and active logs are read incrementally. |
+| **Useful alerts** | Optionally notify at 50%, 75%, or 90% of a rolling limit, once per limit window. |
+| **Mac-native controls** | Launch at login, refresh after wake, bilingual UI, and a safe fictional-data demo mode. |
 
 ## Quick start on macOS
 
-Requirements: macOS 13 or newer, plus Xcode Command Line Tools.
+Download the latest open-source build from [GitHub Releases](https://github.com/wentao-uw/codex-usage-monitor/releases/latest), or build it yourself on macOS 13 or newer with Xcode Command Line Tools:
 
 ```bash
 git clone https://github.com/wentao-uw/codex-usage-monitor.git
@@ -55,9 +57,11 @@ open "dist/Codex Usage Monitor.app"
 
 Click the chart icon in the macOS menu bar. The first launch scans your local history; later refreshes reuse cached session results and only read newly appended log data.
 
-Use the interval menu in the footer to choose **Off, 1, 5, 10, 15, 30, or 60 minutes**. The selection is saved automatically, and manual refresh remains available at any time.
+Use the interval menu in the footer to choose **Off, 1, 5, 10, 15, 30, or 60 minutes**. The selection is saved automatically, and manual refresh remains available at any time. Opening the menu after a while or waking the Mac also refreshes stale data.
 
-To launch it when you sign in, add `Codex Usage Monitor.app` under **System Settings → General → Login Items**.
+Open **Settings** in the app footer to enable launch at login, rolling-limit notifications, demo mode, or a manual update check. Update checks happen only when you click the command.
+
+Release builds are ad-hoc signed for transparent open-source distribution and are not Developer ID notarized. Depending on your Gatekeeper settings, the first launch may require Control-clicking the app and choosing **Open**.
 
 ## What the numbers mean
 
@@ -72,9 +76,10 @@ These are local-log totals. They can differ from account-wide usage when you use
 ## Privacy by design
 
 - Reads Codex JSONL session files locally.
-- Makes no network requests at runtime.
+- Makes no background network requests and sends no logs, tokens, or account data anywhere.
+- Contacts GitHub's public Releases API only when you explicitly choose **Check for Updates**.
 - Includes no telemetry or analytics SDK.
-- Stores refresh state only in the app process; closing the app clears it.
+- Stores refresh preferences and notification de-duplication locally in macOS user defaults; parsed session data is kept only in the app process.
 - Does not need your OpenAI API key.
 
 You can inspect the scanner in [`UsageScanner.swift`](macos/CodexUsageMenuBar/Sources/UsageCore/UsageScanner.swift) and the Node parser in [`session.js`](lib/session.js).
@@ -147,7 +152,7 @@ npm run test:macos
 npm run build:macos
 ```
 
-The macOS build is written to `dist/Codex Usage Monitor.app` and ad-hoc signed for local use. See [`docs/DESIGN.md`](docs/DESIGN.md) for the architecture and [`CONTRIBUTING.md`](CONTRIBUTING.md) for contribution guidance.
+The macOS build is written to `dist/Codex Usage Monitor.app` and ad-hoc signed for local use. Tagged versions are tested and packaged by GitHub Actions without Developer ID or notarization steps. See [`docs/DESIGN.md`](docs/DESIGN.md) for the architecture and [`CONTRIBUTING.md`](CONTRIBUTING.md) for contribution guidance.
 
 ## Pricing updates
 

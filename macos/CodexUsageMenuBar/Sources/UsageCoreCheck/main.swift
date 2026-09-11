@@ -39,6 +39,13 @@ try first.write(to: sessions.appendingPathComponent("first.jsonl"), atomically: 
 try second.write(to: sessions.appendingPathComponent("second.jsonl"), atomically: true, encoding: .utf8)
 
 let now = ISO8601DateFormatter().date(from: "2026-09-11T12:00:00Z")!
+let demo = UsageSnapshot.demo(now: now)
+precondition(demo.totalTokens == 128_450_320, "expected stable fictional historical total")
+precondition(demo.currentCycleUsage.totalTokens == 3_842_910, "expected stable fictional cycle total")
+precondition(demo.historicalModels.count == 2, "expected fictional per-model history")
+precondition(demo.rateLimits.map(\.label) == ["5h", "7d"], "expected fictional rolling limits")
+precondition(demo.updatedAt == now, "expected demo refresh time to follow the supplied clock")
+
 let snapshot = try UsageScanner.scan(codexHome: root, now: now)
 precondition(snapshot.totalTokens == 2_200, "expected 2,200 tokens, got \(snapshot.totalTokens)")
 precondition(snapshot.sessionCount == 2, "expected two sessions")

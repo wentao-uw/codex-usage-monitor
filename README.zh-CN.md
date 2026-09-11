@@ -42,10 +42,12 @@ Codex Usage Monitor 把这些数据整理成一个常驻菜单栏的小窗口：
 | **中英文切换** | 界面可以随时切换中文或英文。 |
 | **灵活刷新** | 可手动刷新，也可选择关闭自动刷新，或设置为 1、5、10、15、30、60 分钟。 |
 | **增量扫描** | 首次读取历史记录后，只处理发生变化的会话和新增日志内容。 |
+| **用量提醒** | 可选择在滚动限制达到 50%、75% 或 90% 时通知；每个周期只提醒一次。 |
+| **更原生的 Mac 体验** | 支持应用内设置登录时启动、唤醒后刷新，以及安全的虚构数据演示模式。 |
 
 ## macOS 快速开始
 
-需要 macOS 13 或更高版本，以及 Xcode Command Line Tools。
+可以从 [GitHub Releases](https://github.com/wentao-uw/codex-usage-monitor/releases/latest) 下载最新开源构建，或者在 macOS 13 或更高版本上用 Xcode Command Line Tools 自行构建：
 
 ```bash
 git clone https://github.com/wentao-uw/codex-usage-monitor.git
@@ -68,9 +70,11 @@ open "dist/Codex Usage Monitor.app"
 - 30 分钟
 - 1 小时
 
-设置会自动保存，下次启动仍然生效。无论是否开启自动刷新，都可以随时点击“手动刷新”。
+设置会自动保存，下次启动仍然生效。无论是否开启自动刷新，都可以随时点击“手动刷新”。长时间后再次打开菜单，或 Mac 从睡眠中唤醒时，也会刷新过期数据。
 
-如需开机自动运行，可在 **系统设置 → 通用 → 登录项** 中添加构建好的应用。
+窗口底部的 **设置** 菜单还可以开启登录时启动、设置滚动限制通知、切换虚构数据演示模式，以及手动检查 GitHub 新版本。只有点击检查命令时才会联网。
+
+Release 中的应用使用 ad-hoc 签名，以便保持开源构建透明；不包含 Developer ID 签名或公证步骤。根据 Gatekeeper 设置，首次打开时可能需要按住 Control 点击应用并选择“打开”。
 
 ## 指标说明
 
@@ -85,10 +89,11 @@ open "dist/Codex Usage Monitor.app"
 ## 隐私设计
 
 - 所有统计都在本机完成。
-- 运行时不发送网络请求。
+- 不进行后台网络请求，也不会发送日志、Token 或账户数据。
+- 仅当你主动选择“检查更新”时访问 GitHub 的公开 Releases API。
 - 不包含遥测或分析 SDK。
 - 不需要 OpenAI API Key。
-- 增量扫描状态仅保存在当前应用进程中，退出应用后自动清除。
+- 刷新偏好和通知去重标记保存在 macOS 本地用户设置中；解析后的会话数据仅保存在当前应用进程中。
 
 核心读取逻辑可以在 [`UsageScanner.swift`](macos/CodexUsageMenuBar/Sources/UsageCore/UsageScanner.swift) 和 [`session.js`](lib/session.js) 中直接审查。
 
@@ -125,7 +130,7 @@ npm run test:macos
 npm run build:macos
 ```
 
-构建结果位于 `dist/Codex Usage Monitor.app`。架构说明见 [`docs/DESIGN.md`](docs/DESIGN.md)，贡献指南见 [`CONTRIBUTING.md`](CONTRIBUTING.md)。
+构建结果位于 `dist/Codex Usage Monitor.app`。带版本标签的提交会由 GitHub Actions 测试并打包，其中没有 Developer ID 或公证步骤。架构说明见 [`docs/DESIGN.md`](docs/DESIGN.md)，贡献指南见 [`CONTRIBUTING.md`](CONTRIBUTING.md)。
 
 ## License
 

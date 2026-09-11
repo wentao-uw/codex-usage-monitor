@@ -1,3 +1,4 @@
+// Native menu bar interface and application entry point.
 import AppKit
 import Combine
 import SwiftUI
@@ -58,6 +59,17 @@ private struct Copy {
     var refresh: String { text("手动刷新", "Refresh") }
     var refreshing: String { text("正在刷新…", "Refreshing…") }
     var autoRefreshTitle: String { text("自动刷新", "Auto refresh") }
+    var settings: String { text("设置", "Settings") }
+    var launchAtLogin: String { text("登录时启动", "Launch at login") }
+    var notifications: String { text("用量提醒", "Usage alerts") }
+    var demoMode: String { text("演示模式", "Demo mode") }
+    var demoBanner: String { text("正在显示虚构演示数据", "Showing fictional demo data") }
+    var checkUpdates: String { text("检查更新", "Check for updates") }
+    var checkingUpdates: String { text("正在检查更新…", "Checking for updates…") }
+    var latestVersion: String { text("已经是最新版本", "You are up to date") }
+    var noRelease: String { text("尚无公开版本", "No public release yet") }
+    var updateFailed: String { text("更新检查失败，请稍后重试", "Update check failed; try again") }
+    var launchAtLoginFailed: String { text("无法修改登录项；请将应用移到“应用程序”后重试。", "Could not change the login item. Move the app to Applications and try again.") }
     var unavailable: String { text("暂不可用", "Unavailable") }
     var quit: String { text("退出", "Quit") }
     var approximate: String { text("按 API 价格估算", "Estimated at API prices") }
@@ -91,6 +103,23 @@ private struct Copy {
         case 1: return text("1 分钟", "1 min")
         case 60: return text("1 小时", "1 hour")
         default: return text("\(minutes) 分钟", "\(minutes) min")
+        }
+    }
+
+    func notificationOption(threshold: Int) -> String {
+        threshold == 0
+            ? text("关闭", "Off")
+            : text("达到 \(threshold)% 时提醒", "Alert at \(threshold)%")
+    }
+
+    func updateAction(_ state: UpdateChecker.State) -> String {
+        switch state {
+        case .idle: return checkUpdates
+        case .checking: return checkingUpdates
+        case .current: return latestVersion
+        case .noRelease: return noRelease
+        case .available(let version, _): return text("下载 \(version)", "Download \(version)")
+        case .failed: return updateFailed
         }
     }
 
@@ -142,11 +171,23 @@ private final class UsageStore: NSObject, ObservableObject {
     private var timer: Timer?
     private var hasStarted = false
     private var autoRefreshMinutes: Int?
+    private var notificationThreshold = 0
+    private var isChinese = true
+    private var demoMode = false
+    private var refreshGeneration = 0
 
-    func start(autoRefreshMinutes: Int) {
+    func start(
+        autoRefreshMinutes: Int,
+        notificationThreshold: Int,
+        isChinese: Bool,
+        demoMode: Bool
+    ) {
         let shouldRefresh = !hasStarted
         hasStarted = true
         setAutoRefresh(minutes: autoRefreshMinutes)
+        setNotificationThreshold(notificationThreshold)
+        self.isChinese = isChinese
+        self.demoMode = demoMode
         if shouldRefresh { refresh() }
     }
 
@@ -171,19 +212,84 @@ private final class UsageStore: NSObject, ObservableObject {
 
     func refresh() {
         guard !isRefreshing else { return }
+        refreshGeneration += 1
+        let generation = refreshGeneration
         isRefreshing = true
         errorMessage = nil
 
+        if demoMode {
+            snapshot = .demo()
+            isRefreshing = false
+            return
+        }
+
         Task {
             do {
-                snapshot = try await Task.detached(priority: .utility) {
+                let refreshedSnapshot = try await Task.detached(priority: .utility) {
                     try UsageScanner.scan()
                 }.value
+                guard generation == refreshGeneration else { return }
+                snapshot = refreshedSnapshot
+                let threshold = notificationThreshold
+                let notificationLanguage = isChinese
+                Task {
+                    await UsageNotificationService.evaluate(
+                        snapshot: refreshedSnapshot,
+                        threshold: threshold,
+                        isChinese: notificationLanguage
+                    )
+                }
             } catch {
+                guard generation == refreshGeneration else { return }
                 errorMessage = error.localizedDescription
             }
             isRefreshing = false
         }
+    }
+
+    func refreshIfStale(maxAge: TimeInterval = 30) {
+        guard let updatedAt = snapshot?.updatedAt else {
+            refresh()
+            return
+        }
+        if Date().timeIntervalSince(updatedAt) >= maxAge { refresh() }
+    }
+
+    func setNotificationThreshold(_ threshold: Int) {
+        notificationThreshold = max(0, threshold)
+        guard notificationThreshold > 0 else { return }
+        Task {
+            guard await UsageNotificationService.requestAuthorization(),
+                  let snapshot,
+                  !demoMode else { return }
+            await UsageNotificationService.evaluate(
+                snapshot: snapshot,
+                threshold: notificationThreshold,
+                isChinese: isChinese
+            )
+        }
+    }
+
+    func setLanguage(isChinese: Bool) {
+        self.isChinese = isChinese
+    }
+
+    func setDemoMode(_ enabled: Bool) {
+        guard demoMode != enabled else { return }
+        demoMode = enabled
+        refreshGeneration += 1
+        isRefreshing = false
+        errorMessage = nil
+        if enabled {
+            snapshot = .demo()
+        } else {
+            snapshot = nil
+            refresh()
+        }
+    }
+
+    func reportError(_ message: String) {
+        errorMessage = message
     }
 
     @objc private func scheduledRefresh() { refresh() }
@@ -331,7 +437,11 @@ private struct UsageMenuView: View {
     @EnvironmentObject private var store: UsageStore
     @AppStorage("language") private var languageRaw = AppLanguage.chinese.rawValue
     @AppStorage("autoRefreshMinutes") private var autoRefreshMinutes = AutoRefreshInterval.tenMinutes.rawValue
+    @AppStorage("notificationThreshold") private var notificationThreshold = NotificationThreshold.off.rawValue
+    @AppStorage("demoMode") private var demoMode = false
     @State private var modelScope = ModelUsageScope.currentCycle
+    @State private var launchAtLogin = LaunchAtLoginService.isEnabled
+    @StateObject private var updateChecker = UpdateChecker()
 
     private var language: AppLanguage { AppLanguage(rawValue: languageRaw) ?? .chinese }
     private var copy: Copy { Copy(language: language) }
@@ -357,10 +467,32 @@ private struct UsageMenuView: View {
             if AutoRefreshInterval(rawValue: autoRefreshMinutes) == nil {
                 autoRefreshMinutes = AutoRefreshInterval.tenMinutes.rawValue
             }
-            store.start(autoRefreshMinutes: autoRefreshMinutes)
+            if NotificationThreshold(rawValue: notificationThreshold) == nil {
+                notificationThreshold = NotificationThreshold.off.rawValue
+            }
+            launchAtLogin = LaunchAtLoginService.isEnabled
+            store.start(
+                autoRefreshMinutes: autoRefreshMinutes,
+                notificationThreshold: notificationThreshold,
+                isChinese: language == .chinese,
+                demoMode: demoMode
+            )
         }
+        .onAppear { store.refreshIfStale() }
         .onChange(of: autoRefreshMinutes) { newValue in
             store.setAutoRefresh(minutes: newValue)
+        }
+        .onChange(of: notificationThreshold) { newValue in
+            store.setNotificationThreshold(newValue)
+        }
+        .onChange(of: languageRaw) { newValue in
+            store.setLanguage(isChinese: newValue == AppLanguage.chinese.rawValue)
+        }
+        .onChange(of: demoMode) { newValue in
+            store.setDemoMode(newValue)
+        }
+        .onReceive(NSWorkspace.shared.notificationCenter.publisher(for: NSWorkspace.didWakeNotification)) { _ in
+            store.refresh()
         }
     }
 
@@ -398,6 +530,16 @@ private struct UsageMenuView: View {
     @ViewBuilder
     private var content: some View {
         if let snapshot = store.snapshot {
+            if demoMode {
+                Label(copy.demoBanner, systemImage: "sparkles")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.purple)
+                    .padding(.horizontal, 11)
+                    .padding(.vertical, 8)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(.purple.opacity(0.09), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+            }
+
             HStack(alignment: .top, spacing: 10) {
                 SummaryCard(
                     eyebrow: copy.historical,
@@ -532,10 +674,60 @@ private struct UsageMenuView: View {
                 }
                 .pickerStyle(.menu)
                 .fixedSize()
-                Text(copy.approximate)
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
+                settingsMenu
             }
+        }
+    }
+
+    private var settingsMenu: some View {
+        Menu {
+            Toggle(copy.launchAtLogin, isOn: Binding(
+                get: { launchAtLogin },
+                set: setLaunchAtLogin
+            ))
+
+            Toggle(copy.demoMode, isOn: $demoMode)
+
+            Picker(copy.notifications, selection: $notificationThreshold) {
+                ForEach(NotificationThreshold.allCases) { threshold in
+                    Text(copy.notificationOption(threshold: threshold.rawValue)).tag(threshold.rawValue)
+                }
+            }
+
+            Divider()
+
+            Button {
+                updateChecker.performAction()
+            } label: {
+                Label(copy.updateAction(updateChecker.state), systemImage: updateIcon)
+            }
+            .disabled(updateChecker.state == .checking)
+        } label: {
+            Label(copy.settings, systemImage: "gearshape")
+        }
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+    }
+
+    private var updateIcon: String {
+        switch updateChecker.state {
+        case .available: return "arrow.down.circle"
+        case .current: return "checkmark.circle"
+        case .failed: return "exclamationmark.triangle"
+        default: return "arrow.triangle.2.circlepath"
+        }
+    }
+
+    private func setLaunchAtLogin(_ enabled: Bool) {
+        do {
+            try LaunchAtLoginService.setEnabled(enabled)
+            launchAtLogin = LaunchAtLoginService.isEnabled
+            if launchAtLogin != enabled {
+                store.reportError(copy.launchAtLoginFailed)
+            }
+        } catch {
+            launchAtLogin = LaunchAtLoginService.isEnabled
+            store.reportError(copy.launchAtLoginFailed)
         }
     }
 
