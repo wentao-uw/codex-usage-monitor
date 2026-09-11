@@ -18,6 +18,18 @@ private enum ModelUsageScope: String, CaseIterable, Identifiable {
     var id: String { rawValue }
 }
 
+private enum AutoRefreshInterval: Int, CaseIterable, Identifiable {
+    case off = 0
+    case oneMinute = 1
+    case fiveMinutes = 5
+    case tenMinutes = 10
+    case fifteenMinutes = 15
+    case thirtyMinutes = 30
+    case oneHour = 60
+
+    var id: Int { rawValue }
+}
+
 private struct Copy {
     let language: AppLanguage
 
@@ -45,7 +57,7 @@ private struct Copy {
     var cycleRange: String { text("本地日志累计周期", "Local-log cycle") }
     var refresh: String { text("手动刷新", "Refresh") }
     var refreshing: String { text("正在刷新…", "Refreshing…") }
-    var autoRefresh: String { text("每 10 分钟自动刷新", "Refreshes every 10 minutes") }
+    var autoRefreshTitle: String { text("自动刷新", "Auto refresh") }
     var unavailable: String { text("暂不可用", "Unavailable") }
     var quit: String { text("退出", "Quit") }
     var approximate: String { text("按 API 价格估算", "Estimated at API prices") }
@@ -57,6 +69,28 @@ private struct Copy {
         switch value {
         case .currentCycle: return currentCycle
         case .historical: return historical
+        }
+    }
+
+    func autoRefresh(minutes: Int) -> String {
+        switch minutes {
+        case 0:
+            return text("自动刷新已关闭", "Auto refresh off")
+        case 1:
+            return text("每分钟自动刷新", "Refresh every minute")
+        case 60:
+            return text("每小时自动刷新", "Refresh every hour")
+        default:
+            return text("每 \(minutes) 分钟自动刷新", "Refresh every \(minutes) minutes")
+        }
+    }
+
+    func autoRefreshOption(minutes: Int) -> String {
+        switch minutes {
+        case 0: return text("关闭", "Off")
+        case 1: return text("1 分钟", "1 min")
+        case 60: return text("1 小时", "1 hour")
+        default: return text("\(minutes) 分钟", "\(minutes) min")
         }
     }
 
@@ -106,12 +140,27 @@ private final class UsageStore: NSObject, ObservableObject {
     @Published var errorMessage: String?
 
     private var timer: Timer?
+    private var hasStarted = false
+    private var autoRefreshMinutes: Int?
 
-    func start() {
-        guard timer == nil else { return }
-        refresh()
+    func start(autoRefreshMinutes: Int) {
+        let shouldRefresh = !hasStarted
+        hasStarted = true
+        setAutoRefresh(minutes: autoRefreshMinutes)
+        if shouldRefresh { refresh() }
+    }
+
+    func setAutoRefresh(minutes: Int) {
+        let normalizedMinutes = max(0, minutes)
+        guard autoRefreshMinutes != normalizedMinutes else { return }
+
+        autoRefreshMinutes = normalizedMinutes
+        timer?.invalidate()
+        timer = nil
+
+        guard normalizedMinutes > 0 else { return }
         timer = Timer(
-            timeInterval: 10 * 60,
+            timeInterval: TimeInterval(normalizedMinutes * 60),
             target: self,
             selector: #selector(scheduledRefresh),
             userInfo: nil,
@@ -281,6 +330,7 @@ private struct ModelUsageRow: View {
 private struct UsageMenuView: View {
     @EnvironmentObject private var store: UsageStore
     @AppStorage("language") private var languageRaw = AppLanguage.chinese.rawValue
+    @AppStorage("autoRefreshMinutes") private var autoRefreshMinutes = AutoRefreshInterval.tenMinutes.rawValue
     @State private var modelScope = ModelUsageScope.currentCycle
 
     private var language: AppLanguage { AppLanguage(rawValue: languageRaw) ?? .chinese }
@@ -303,7 +353,15 @@ private struct UsageMenuView: View {
                 .padding(.vertical, 11)
         }
         .frame(width: 440, height: 650)
-        .task { store.start() }
+        .task {
+            if AutoRefreshInterval(rawValue: autoRefreshMinutes) == nil {
+                autoRefreshMinutes = AutoRefreshInterval.tenMinutes.rawValue
+            }
+            store.start(autoRefreshMinutes: autoRefreshMinutes)
+        }
+        .onChange(of: autoRefreshMinutes) { newValue in
+            store.setAutoRefresh(minutes: newValue)
+        }
     }
 
     private var header: some View {
@@ -448,8 +506,8 @@ private struct UsageMenuView: View {
         VStack(spacing: 9) {
             HStack {
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(store.snapshot.map { copy.updated($0.updatedAt) } ?? copy.autoRefresh)
-                    Text("\(copy.autoRefresh) · \(copy.localOnly)")
+                    Text(store.snapshot.map { copy.updated($0.updatedAt) } ?? copy.autoRefresh(minutes: autoRefreshMinutes))
+                    Text("\(copy.autoRefresh(minutes: autoRefreshMinutes)) · \(copy.localOnly)")
                 }
                 .font(.caption2)
                 .foregroundStyle(.secondary)
@@ -467,6 +525,13 @@ private struct UsageMenuView: View {
                 Button(copy.quit) { NSApplication.shared.terminate(nil) }
                     .keyboardShortcut("q")
                 Spacer()
+                Picker(copy.autoRefreshTitle, selection: $autoRefreshMinutes) {
+                    ForEach(AutoRefreshInterval.allCases) { interval in
+                        Text(copy.autoRefreshOption(minutes: interval.rawValue)).tag(interval.rawValue)
+                    }
+                }
+                .pickerStyle(.menu)
+                .fixedSize()
                 Text(copy.approximate)
                     .font(.caption2)
                     .foregroundStyle(.tertiary)

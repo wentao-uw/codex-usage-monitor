@@ -5,6 +5,10 @@
 <h1 align="center">Codex Usage Monitor</h1>
 
 <p align="center">
+  <strong>English</strong> · <a href="README.zh-CN.md">简体中文</a>
+</p>
+
+<p align="center">
   A private, one-click view of your Codex tokens, rolling cycle, models, cache efficiency, and API-equivalent cost.
 </p>
 
@@ -18,7 +22,7 @@
 
 <p align="center">
   <strong>Native macOS menu bar app · Codex Desktop card · CLI · Stop hooks</strong><br>
-  English / 中文 · 10-minute auto-refresh · fast incremental scans
+  English / 中文 · configurable auto-refresh · fast incremental scans
 </p>
 
 ![Codex Usage Monitor macOS interface with fictional demo data](docs/assets/menu-bar-preview.png)
@@ -36,7 +40,7 @@ Codex shows useful information for the current task, but it is hard to answer br
 | **Token breakdown** | Input, cached input, output, reasoning, cache hit rate, and current context fill. |
 | **Usage by model** | Per-model totals, token composition, and estimated API-equivalent cost for the current cycle or all time. |
 | **Rolling limits** | Usage percentage and reset time for every limit reported in local logs. |
-| **Fast refresh** | One manual click or every 10 minutes; unchanged sessions stay cached and active logs are read incrementally. |
+| **Fast refresh** | Refresh manually or choose Off, 1, 5, 10, 15, 30, or 60 minutes; unchanged sessions stay cached and active logs are read incrementally. |
 
 ## Quick start on macOS
 
@@ -50,6 +54,8 @@ open "dist/Codex Usage Monitor.app"
 ```
 
 Click the chart icon in the macOS menu bar. The first launch scans your local history; later refreshes reuse cached session results and only read newly appended log data.
+
+Use the interval menu in the footer to choose **Off, 1, 5, 10, 15, 30, or 60 minutes**. The selection is saved automatically, and manual refresh remains available at any time.
 
 To launch it when you sign in, add `Codex Usage Monitor.app` under **System Settings → General → Login Items**.
 
@@ -150,3 +156,5 @@ Rates live in [`lib/pricing.js`](lib/pricing.js). When API pricing changes, upda
 ## License
 
 [MIT](LICENSE)
+
+This is an independent, unofficial project. It is not affiliated with or endorsed by OpenAI.

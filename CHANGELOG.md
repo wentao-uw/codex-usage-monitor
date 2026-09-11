@@ -9,7 +9,7 @@
 - Add per-model current-cycle and historical token breakdowns with API-equivalent cost.
 - Make the displayed update time reflect completion of each automatic or manual scan.
 - Cache parsed macOS session data and incrementally read appended JSONL records, making warm refreshes near-instant even with large histories.
-- Add Chinese and English switching, 10-minute background refresh, and manual refresh to the menu bar app.
+- Add Chinese and English switching, persistent configurable auto-refresh (Off, 1, 5, 10, 15, 30, or 60 minutes), and manual refresh to the menu bar app.
 - Refresh bundled API-equivalent prices for the current GPT-5.4, GPT-5.5, GPT-5.6, and GPT-6 families.
 - Preserve the existing terminal statusline and hook behavior.
 
