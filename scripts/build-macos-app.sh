@@ -13,6 +13,7 @@ rm -rf "$APP_ROOT"
 mkdir -p "$CONTENTS/MacOS" "$CONTENTS/Resources"
 install -m 755 "$PACKAGE_ROOT/.build/release/CodexUsageMenuBar" "$CONTENTS/MacOS/Codex Usage Monitor"
 install -m 644 "$PACKAGE_ROOT/Support/Info.plist" "$CONTENTS/Info.plist"
+install -m 644 "$PACKAGE_ROOT/Support/AppIcon.icns" "$CONTENTS/Resources/AppIcon.icns"
 codesign --force --deep --sign - "$APP_ROOT"
 
 echo "$APP_ROOT"

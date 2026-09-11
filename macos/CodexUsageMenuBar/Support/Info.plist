@@ -8,8 +8,10 @@
     <string>Codex Usage Monitor</string>
     <key>CFBundleExecutable</key>
     <string>Codex Usage Monitor</string>
+    <key>CFBundleIconFile</key>
+    <string>AppIcon</string>
     <key>CFBundleIdentifier</key>
-    <string>com.harveyxiacn.codex-usage-monitor.menubar</string>
+    <string>app.codexusagemonitor.menubar</string>
     <key>CFBundleInfoDictionaryVersion</key>
     <string>6.0</string>
     <key>CFBundleName</key>
