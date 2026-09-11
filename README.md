@@ -21,8 +21,11 @@ The repository also includes a native macOS menu bar app. It shows both all-time
 local usage and usage accumulated since the start of the current longest Codex
 rolling-limit window (normally 7 days). The current-cycle section includes input,
 cached input, output, reasoning, cache hit, latest context fill, API-equivalent
-cost, rolling-limit utilization, and reset time. It supports Chinese and English,
-refreshes every 10 minutes, and includes a manual Refresh button.
+cost, rolling-limit utilization, and reset time. A model-usage section switches
+between current-cycle and all-time totals and shows token breakdowns and estimated
+cost for every model found in the logs. It supports Chinese and English, refreshes
+every 10 minutes, and includes a manual Refresh button whose completion time is
+shown in the footer.
 
 Compact statusline:
 

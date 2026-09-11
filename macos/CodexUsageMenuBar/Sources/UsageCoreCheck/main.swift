@@ -5,7 +5,7 @@ if CommandLine.arguments.contains("--live") {
     let snapshot = try UsageScanner.scan()
     let cost = snapshot.apiEquivalentUSD.map { String(format: "%.6f", $0) } ?? "unavailable"
     let cycle = snapshot.currentCycle.map { "\($0.label): \(snapshot.currentCycleUsage.totalTokens) tokens" } ?? "cycle unavailable"
-    print("Live scan passed: \(snapshot.totalTokens) historical tokens, \(cycle), API≈$\(cost), \(snapshot.sessionCount) sessions")
+    print("Live scan passed: \(snapshot.totalTokens) historical tokens, \(cycle), \(snapshot.currentCycleModels.count)/\(snapshot.historicalModels.count) cycle/history models, API≈$\(cost), \(snapshot.sessionCount) sessions")
     exit(EXIT_SUCCESS)
 }
 
@@ -48,5 +48,14 @@ precondition((snapshot.currentCycleApiEquivalentUSD ?? 0) > 0, "expected a posit
 precondition(snapshot.rateLimits.map(\.label) == ["5h", "7d"], "expected both rolling limits")
 precondition(snapshot.latestModel == "gpt-5.4-mini", "expected latest model")
 precondition(snapshot.latestContextUsedPercent == 5, "expected latest context percent")
+precondition(snapshot.updatedAt == now, "expected refresh time to change on every scan")
+precondition(snapshot.latestActivityAt != nil, "expected latest activity timestamp")
+precondition(snapshot.historicalModels.count == 2, "expected historical usage for each model")
+precondition(snapshot.historicalModels.first?.modelID == "gpt-5.5", "expected models sorted by token usage")
+precondition(snapshot.historicalModels.first?.usage.totalTokens == 1_650, "expected per-model historical usage")
+precondition(Set(snapshot.currentCycleModels.map(\.modelID)) == Set(["gpt-5.5", "gpt-5.4-mini"]), "expected current-cycle models")
+precondition(snapshot.currentCycleModels.allSatisfy { $0.usage.totalTokens == 550 }, "expected per-model cycle usage")
+let refreshedSnapshot = try UsageScanner.scan(codexHome: root, now: now.addingTimeInterval(60))
+precondition(refreshedSnapshot.updatedAt > snapshot.updatedAt, "expected manual refresh to advance displayed time")
 
 print("UsageCoreCheck passed: \(snapshot.totalTokens) historical, \(snapshot.currentCycleUsage.totalTokens) current-cycle tokens")

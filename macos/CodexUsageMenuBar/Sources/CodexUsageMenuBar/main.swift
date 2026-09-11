@@ -11,6 +11,13 @@ private enum AppLanguage: String, CaseIterable, Identifiable {
     var displayName: String { self == .chinese ? "中文" : "English" }
 }
 
+private enum ModelUsageScope: String, CaseIterable, Identifiable {
+    case currentCycle
+    case historical
+
+    var id: String { rawValue }
+}
+
 private struct Copy {
     let language: AppLanguage
 
@@ -30,6 +37,9 @@ private struct Copy {
     var cacheHit: String { text("缓存命中", "Cache hit") }
     var context: String { text("当前上下文", "Current context") }
     var rollingLimits: String { text("滚动限制", "Rolling limits") }
+    var modelUsage: String { text("按模型统计", "Usage by model") }
+    var tokens: String { text("Token", "tokens") }
+    var noModelUsage: String { text("暂无模型用量", "No model usage") }
     var used: String { text("已使用", "used") }
     var resets: String { text("重置于", "resets") }
     var cycleRange: String { text("本地日志累计周期", "Local-log cycle") }
@@ -42,6 +52,13 @@ private struct Copy {
     var localOnly: String { text("仅统计本地 Codex 日志", "Local Codex logs only") }
     var sessions: String { text("个会话", "sessions") }
     var noCycle: String { text("尚未找到周期信息", "No cycle information found") }
+
+    func scope(_ value: ModelUsageScope) -> String {
+        switch value {
+        case .currentCycle: return currentCycle
+        case .historical: return historical
+        }
+    }
 
     func updated(_ date: Date) -> String {
         text("更新于 \(time(date))", "Updated at \(time(date))")
@@ -228,9 +245,43 @@ private struct LimitRow: View {
     }
 }
 
+private struct ModelUsageRow: View {
+    let modelID: String
+    let details: String
+    let total: String
+    let cost: String
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 12) {
+            VStack(alignment: .leading, spacing: 5) {
+                Text(modelID)
+                    .font(.body.weight(.semibold))
+                    .textSelection(.enabled)
+                Text(details)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+            }
+            Spacer(minLength: 8)
+            VStack(alignment: .trailing, spacing: 5) {
+                Text(total)
+                    .font(.system(.body, design: .rounded).weight(.bold))
+                    .monospacedDigit()
+                Text(cost)
+                    .font(.caption2.weight(.medium))
+                    .foregroundStyle(.secondary)
+                    .monospacedDigit()
+            }
+        }
+        .padding(11)
+        .background(.quaternary.opacity(0.3), in: RoundedRectangle(cornerRadius: 11, style: .continuous))
+    }
+}
+
 private struct UsageMenuView: View {
     @EnvironmentObject private var store: UsageStore
     @AppStorage("language") private var languageRaw = AppLanguage.chinese.rawValue
+    @State private var modelScope = ModelUsageScope.currentCycle
 
     private var language: AppLanguage { AppLanguage(rawValue: languageRaw) ?? .chinese }
     private var copy: Copy { Copy(language: language) }
@@ -322,6 +373,8 @@ private struct UsageMenuView: View {
                 }
             }
 
+            modelUsageSection(snapshot)
+
             if !snapshot.rateLimits.isEmpty {
                 sectionHeader(copy.rollingLimits, subtitle: nil)
                 VStack(spacing: 8) {
@@ -358,6 +411,37 @@ private struct UsageMenuView: View {
             }
         }
         .padding(.top, 2)
+    }
+
+    @ViewBuilder
+    private func modelUsageSection(_ snapshot: UsageSnapshot) -> some View {
+        sectionHeader(copy.modelUsage, subtitle: nil)
+        Picker("", selection: $modelScope) {
+            ForEach(ModelUsageScope.allCases) { scope in
+                Text(copy.scope(scope)).tag(scope)
+            }
+        }
+        .labelsHidden()
+        .pickerStyle(.segmented)
+
+        let models = modelScope == .currentCycle ? snapshot.currentCycleModels : snapshot.historicalModels
+        if models.isEmpty {
+            Text(copy.noModelUsage)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, minHeight: 44)
+        } else {
+            VStack(spacing: 8) {
+                ForEach(models, id: \.modelID) { model in
+                    ModelUsageRow(
+                        modelID: model.modelID,
+                        details: modelDetails(model.usage),
+                        total: "\(formatCompactTokens(model.usage.totalTokens)) \(copy.tokens)",
+                        cost: formatCost(model.apiEquivalentUSD, complete: model.costIsComplete)
+                    )
+                }
+            }
+        }
     }
 
     private var footer: some View {
@@ -419,6 +503,15 @@ private struct UsageMenuView: View {
         guard let value else { return copy.unavailable }
         let digits = value < 0.01 ? 4 : 2
         return String(format: "%@$%.*f", complete ? "≈" : "≥", digits, value)
+    }
+
+    private func modelDetails(_ usage: TokenUsageSnapshot) -> String {
+        [
+            "\(copy.input) \(formatCompactTokens(usage.inputTokens))",
+            "\(copy.cachedInput) \(formatCompactTokens(usage.cachedInputTokens))",
+            "\(copy.output) \(formatCompactTokens(usage.outputTokens))",
+            "\(copy.reasoning) \(formatCompactTokens(usage.reasoningOutputTokens))",
+        ].joined(separator: " · ")
     }
 }
 

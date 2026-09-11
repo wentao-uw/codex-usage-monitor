@@ -27,6 +27,13 @@ public struct TokenUsageSnapshot: Equatable, Sendable {
     }
 }
 
+public struct ModelUsageSnapshot: Equatable, Sendable {
+    public let modelID: String
+    public let usage: TokenUsageSnapshot
+    public let apiEquivalentUSD: Double?
+    public let costIsComplete: Bool
+}
+
 public struct UsageLimitSnapshot: Equatable, Sendable {
     public let label: String
     public let usedPercent: Double
@@ -44,10 +51,13 @@ public struct UsageSnapshot: Equatable, Sendable {
     public let currentCycleCostIsComplete: Bool
     public let currentCycle: UsageLimitSnapshot?
     public let rateLimits: [UsageLimitSnapshot]
+    public let historicalModels: [ModelUsageSnapshot]
+    public let currentCycleModels: [ModelUsageSnapshot]
     public let latestModel: String?
     public let latestReasoningEffort: String?
     public let latestContextUsedPercent: Double?
     public let sessionCount: Int
+    public let latestActivityAt: Date?
     public let updatedAt: Date
 
     public var totalTokens: Int64 { historicalUsage.totalTokens }
@@ -136,6 +146,8 @@ public enum UsageScanner {
 
         let historicalCost = apiEquivalentCost(for: historicalModelUsage)
         let currentCycleCost = apiEquivalentCost(for: currentCycleModelUsage)
+        let historicalModels = modelSnapshots(for: historicalModelUsage)
+        let currentCycleModels = modelSnapshots(for: currentCycleModelUsage)
         let contextPercent: Double?
         if let detail = latestDetail, detail.contextWindow > 0 {
             contextPercent = Double(detail.latestUsage.inputTokens) / Double(detail.contextWindow) * 100
@@ -152,11 +164,14 @@ public enum UsageScanner {
             currentCycleCostIsComplete: currentCycleCost.complete,
             currentCycle: currentCycle,
             rateLimits: effectiveLimits,
+            historicalModels: historicalModels,
+            currentCycleModels: currentCycleModels,
             latestModel: latestDetail?.model,
             latestReasoningEffort: latestDetail?.reasoningEffort,
             latestContextUsedPercent: contextPercent,
             sessionCount: sessionsByID.count,
-            updatedAt: latestUpdate == .distantPast ? now : latestUpdate
+            latestActivityAt: latestUpdate == .distantPast ? nil : latestUpdate,
+            updatedAt: now
         )
     }
 
@@ -331,6 +346,25 @@ public enum UsageScanner {
         if !hasUsage { return (nil, true) }
         if !hasKnownPrice { return (nil, false) }
         return (usd, complete)
+    }
+
+    private static func modelSnapshots(for usageByModel: [String: TokenUsage]) -> [ModelUsageSnapshot] {
+        usageByModel.compactMap { modelID, usage in
+            guard usage.hasUsage else { return nil }
+            let cost = apiEquivalentCost(for: [modelID: usage])
+            return ModelUsageSnapshot(
+                modelID: modelID,
+                usage: usage.snapshot,
+                apiEquivalentUSD: cost.usd,
+                costIsComplete: cost.complete
+            )
+        }
+        .sorted {
+            if $0.usage.totalTokens == $1.usage.totalTokens {
+                return $0.modelID.localizedCaseInsensitiveCompare($1.modelID) == .orderedAscending
+            }
+            return $0.usage.totalTokens > $1.usage.totalTokens
+        }
     }
 
     private static func price(for modelID: String) -> Price? {
