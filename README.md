@@ -17,10 +17,12 @@ mention the plugin to open it.
 The UI is backed by a local stdio MCP server. It reads the same local session
 JSONL files as the CLI and makes no network requests.
 
-The repository also includes a native macOS menu bar app. It intentionally shows
-only two account-wide local aggregates: total tokens across discovered Codex
-sessions and their API-equivalent cost. It supports Chinese and English, refreshes
-every 10 minutes, and includes a manual Refresh button.
+The repository also includes a native macOS menu bar app. It shows both all-time
+local usage and usage accumulated since the start of the current longest Codex
+rolling-limit window (normally 7 days). The current-cycle section includes input,
+cached input, output, reasoning, cache hit, latest context fill, API-equivalent
+cost, rolling-limit utilization, and reset time. It supports Chinese and English,
+refreshes every 10 minutes, and includes a manual Refresh button.
 
 Compact statusline:
 
@@ -79,6 +81,13 @@ from the language menu. The app reads `~/.codex/sessions` and
 `~/.codex/archived_sessions` locally; it does not make network requests. To run
 it automatically after login, add the app in System Settings → General → Login
 Items.
+
+“All-time local” totals the latest cumulative usage from every discovered local
+session. “Current cycle” sums timestamped usage events since the start of the
+longest currently reported rolling window; if Codex reports both 5-hour and
+7-day windows, the cycle total uses the 7-day window while both limits remain
+visible. These are local-log totals and can differ from account-wide usage on
+other Macs or environments.
 
 ## Codex Desktop UI
 
@@ -146,7 +155,7 @@ calls.
 Clone the repo:
 
 ```bash
-git clone https://github.com/harveyxiacn/codex-usage-monitor.git ~/.codex/plugins/codex-usage-monitor
+git clone https://github.com/wentao-uw/codex-usage-monitor.git ~/.codex/plugins/codex-usage-monitor
 ```
 
 Run it manually:

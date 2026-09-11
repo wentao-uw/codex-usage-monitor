@@ -1,25 +1,58 @@
 import Foundation
 
-public struct UsageSnapshot: Equatable, Sendable {
+public struct TokenUsageSnapshot: Equatable, Sendable {
+    public let inputTokens: Int64
+    public let cachedInputTokens: Int64
+    public let outputTokens: Int64
+    public let reasoningOutputTokens: Int64
     public let totalTokens: Int64
-    public let apiEquivalentUSD: Double?
-    public let costIsComplete: Bool
+
+    public init(
+        inputTokens: Int64 = 0,
+        cachedInputTokens: Int64 = 0,
+        outputTokens: Int64 = 0,
+        reasoningOutputTokens: Int64 = 0,
+        totalTokens: Int64 = 0
+    ) {
+        self.inputTokens = inputTokens
+        self.cachedInputTokens = cachedInputTokens
+        self.outputTokens = outputTokens
+        self.reasoningOutputTokens = reasoningOutputTokens
+        self.totalTokens = totalTokens
+    }
+
+    public var cacheHitPercent: Double? {
+        guard inputTokens > 0 else { return nil }
+        return Double(cachedInputTokens) / Double(inputTokens) * 100
+    }
+}
+
+public struct UsageLimitSnapshot: Equatable, Sendable {
+    public let label: String
+    public let usedPercent: Double
+    public let windowMinutes: Int
+    public let startsAt: Date
+    public let resetsAt: Date
+}
+
+public struct UsageSnapshot: Equatable, Sendable {
+    public let historicalUsage: TokenUsageSnapshot
+    public let currentCycleUsage: TokenUsageSnapshot
+    public let historicalApiEquivalentUSD: Double?
+    public let historicalCostIsComplete: Bool
+    public let currentCycleApiEquivalentUSD: Double?
+    public let currentCycleCostIsComplete: Bool
+    public let currentCycle: UsageLimitSnapshot?
+    public let rateLimits: [UsageLimitSnapshot]
+    public let latestModel: String?
+    public let latestReasoningEffort: String?
+    public let latestContextUsedPercent: Double?
     public let sessionCount: Int
     public let updatedAt: Date
 
-    public init(
-        totalTokens: Int64,
-        apiEquivalentUSD: Double?,
-        costIsComplete: Bool,
-        sessionCount: Int,
-        updatedAt: Date
-    ) {
-        self.totalTokens = totalTokens
-        self.apiEquivalentUSD = apiEquivalentUSD
-        self.costIsComplete = costIsComplete
-        self.sessionCount = sessionCount
-        self.updatedAt = updatedAt
-    }
+    public var totalTokens: Int64 { historicalUsage.totalTokens }
+    public var apiEquivalentUSD: Double? { historicalApiEquivalentUSD }
+    public var costIsComplete: Bool { historicalCostIsComplete }
 }
 
 public enum UsageScannerError: LocalizedError {
@@ -38,7 +71,8 @@ public enum UsageScanner {
 
     public static func scan(
         codexHome: URL = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".codex", isDirectory: true)
+            .appendingPathComponent(".codex", isDirectory: true),
+        now: Date = Date()
     ) throws -> UsageSnapshot {
         let fileManager = FileManager.default
         var isDirectory: ObjCBool = false
@@ -62,25 +96,67 @@ public enum UsageScanner {
             }
         }
 
-        var totalTokens: Int64 = 0
-        var modelUsage: [String: TokenUsage] = [:]
+        var historicalUsage = TokenUsage.zero
+        var historicalModelUsage: [String: TokenUsage] = [:]
+        var allEvents: [UsageEvent] = []
         var latestUpdate = Date.distantPast
+        var latestDetail: SessionDetail?
+        var latestLimitRecord: LimitRecord?
 
         for session in sessionsByID.values {
-            totalTokens += session.totalTokens
-            latestUpdate = max(latestUpdate, session.modifiedAt)
-            for (model, usage) in session.modelUsage {
-                modelUsage[model, default: .zero].add(usage)
+            historicalUsage.add(session.totalUsage)
+            latestUpdate = max(latestUpdate, session.latestAt ?? session.modifiedAt)
+            allEvents.append(contentsOf: session.events)
+            for event in session.events {
+                historicalModelUsage[event.model, default: .zero].add(event.usage)
+            }
+            if let detail = session.latestDetail,
+               latestDetail == nil || detail.timestamp > latestDetail!.timestamp {
+                latestDetail = detail
+            }
+            if let record = session.latestLimitRecord,
+               latestLimitRecord == nil || record.timestamp > latestLimitRecord!.timestamp {
+                latestLimitRecord = record
             }
         }
 
-        let cost = apiEquivalentCost(for: modelUsage)
+        let effectiveLimits = (latestLimitRecord?.limits ?? [])
+            .map { effectiveLimit($0, now: now) }
+            .sorted { $0.windowMinutes < $1.windowMinutes }
+        let currentCycle = effectiveLimits.max { $0.windowMinutes < $1.windowMinutes }
+
+        var currentCycleUsage = TokenUsage.zero
+        var currentCycleModelUsage: [String: TokenUsage] = [:]
+        if let currentCycle {
+            for event in allEvents where event.timestamp >= currentCycle.startsAt && event.timestamp < currentCycle.resetsAt {
+                currentCycleUsage.add(event.usage)
+                currentCycleModelUsage[event.model, default: .zero].add(event.usage)
+            }
+        }
+
+        let historicalCost = apiEquivalentCost(for: historicalModelUsage)
+        let currentCycleCost = apiEquivalentCost(for: currentCycleModelUsage)
+        let contextPercent: Double?
+        if let detail = latestDetail, detail.contextWindow > 0 {
+            contextPercent = Double(detail.latestUsage.inputTokens) / Double(detail.contextWindow) * 100
+        } else {
+            contextPercent = nil
+        }
+
         return UsageSnapshot(
-            totalTokens: totalTokens,
-            apiEquivalentUSD: cost.usd,
-            costIsComplete: cost.complete,
+            historicalUsage: historicalUsage.snapshot,
+            currentCycleUsage: currentCycleUsage.snapshot,
+            historicalApiEquivalentUSD: historicalCost.usd,
+            historicalCostIsComplete: historicalCost.complete,
+            currentCycleApiEquivalentUSD: currentCycleCost.usd,
+            currentCycleCostIsComplete: currentCycleCost.complete,
+            currentCycle: currentCycle,
+            rateLimits: effectiveLimits,
+            latestModel: latestDetail?.model,
+            latestReasoningEffort: latestDetail?.reasoningEffort,
+            latestContextUsedPercent: contextPercent,
             sessionCount: sessionsByID.count,
-            updatedAt: latestUpdate == .distantPast ? Date() : latestUpdate
+            updatedAt: latestUpdate == .distantPast ? now : latestUpdate
         )
     }
 
@@ -90,9 +166,7 @@ public enum UsageScanner {
             at: root,
             includingPropertiesForKeys: keys,
             options: [.skipsHiddenFiles, .skipsPackageDescendants]
-        ) else {
-            return []
-        }
+        ) else { return [] }
 
         var files: [URL] = []
         for case let url as URL in enumerator where url.pathExtension == "jsonl" {
@@ -107,15 +181,18 @@ public enum UsageScanner {
               let size = (attributes[.size] as? NSNumber)?.int64Value,
               size <= maximumTranscriptBytes,
               let data = try? Data(contentsOf: file),
-              let text = String(data: data, encoding: .utf8) else {
-            return nil
-        }
+              let text = String(data: data, encoding: .utf8) else { return nil }
 
         let modifiedAt = (attributes[.modificationDate] as? Date) ?? Date.distantPast
         var id: String?
         var currentModel = "unknown"
-        var latestTotalTokens: Int64 = 0
-        var modelUsage: [String: TokenUsage] = [:]
+        var currentEffort: String?
+        var contextWindow: Int64 = 0
+        var latestAt: Date?
+        var totalUsage = TokenUsage.zero
+        var events: [UsageEvent] = []
+        var latestDetail: SessionDetail?
+        var latestLimitRecord: LimitRecord?
         var sawUsage = false
 
         text.enumerateLines { line, _ in
@@ -123,9 +200,10 @@ public enum UsageScanner {
                   let lineData = line.data(using: .utf8),
                   let record = try? JSONSerialization.jsonObject(with: lineData) as? [String: Any],
                   let type = record["type"] as? String,
-                  let payload = record["payload"] as? [String: Any] else {
-                return
-            }
+                  let payload = record["payload"] as? [String: Any] else { return }
+
+            let timestamp = parseTimestamp(record["timestamp"]) ?? modifiedAt
+            latestAt = max(latestAt ?? .distantPast, timestamp)
 
             if type == "session_meta" {
                 id = nonemptyString(payload["session_id"]) ?? nonemptyString(payload["id"]) ?? id
@@ -133,23 +211,36 @@ public enum UsageScanner {
             }
 
             if type == "turn_context" {
-                currentModel = nonemptyString(payload["model"])
-                    ?? collaborationModel(payload)
-                    ?? currentModel
+                currentModel = nonemptyString(payload["model"]) ?? collaborationModel(payload) ?? currentModel
+                currentEffort = nonemptyString(payload["effort"]) ?? collaborationEffort(payload) ?? currentEffort
+                let window = int64(payload["model_context_window"])
+                if window > 0 { contextWindow = window }
                 return
             }
 
             guard type == "event_msg",
                   payload["type"] as? String == "token_count",
-                  let info = payload["info"] as? [String: Any] else {
-                return
-            }
+                  let info = payload["info"] as? [String: Any] else { return }
 
+            let window = int64(info["model_context_window"])
+            if window > 0 { contextWindow = window }
             if let total = info["total_token_usage"] as? [String: Any] {
-                latestTotalTokens = int64(total["total_tokens"])
+                totalUsage = TokenUsage(dictionary: total)
             }
-            if let latest = info["last_token_usage"] as? [String: Any] {
-                modelUsage[currentModel, default: .zero].add(TokenUsage(dictionary: latest))
+            let latest = TokenUsage(dictionary: info["last_token_usage"] as? [String: Any] ?? [:])
+            if latest.hasUsage {
+                events.append(UsageEvent(timestamp: timestamp, model: currentModel, usage: latest))
+            }
+            latestDetail = SessionDetail(
+                timestamp: timestamp,
+                model: currentModel == "unknown" ? nil : currentModel,
+                reasoningEffort: currentEffort,
+                contextWindow: contextWindow,
+                latestUsage: latest
+            )
+            if let rawLimits = payload["rate_limits"] as? [String: Any] {
+                let limits = [rawLimits["primary"], rawLimits["secondary"]].compactMap { parseLimit($0) }
+                if !limits.isEmpty { latestLimitRecord = LimitRecord(timestamp: timestamp, limits: limits) }
             }
             sawUsage = true
         }
@@ -158,17 +249,60 @@ public enum UsageScanner {
         return SessionUsage(
             id: id,
             modifiedAt: modifiedAt,
-            totalTokens: latestTotalTokens,
-            modelUsage: modelUsage
+            latestAt: latestAt,
+            totalUsage: totalUsage,
+            events: events,
+            latestDetail: latestDetail,
+            latestLimitRecord: latestLimitRecord
         )
     }
 
     private static func collaborationModel(_ payload: [String: Any]) -> String? {
         guard let mode = payload["collaboration_mode"] as? [String: Any],
-              let settings = mode["settings"] as? [String: Any] else {
-            return nil
-        }
+              let settings = mode["settings"] as? [String: Any] else { return nil }
         return nonemptyString(settings["model"])
+    }
+
+    private static func collaborationEffort(_ payload: [String: Any]) -> String? {
+        guard let mode = payload["collaboration_mode"] as? [String: Any],
+              let settings = mode["settings"] as? [String: Any] else { return nil }
+        return nonemptyString(settings["reasoning_effort"])
+    }
+
+    private static func parseLimit(_ value: Any?) -> RawUsageLimit? {
+        guard let raw = value as? [String: Any] else { return nil }
+        let minutes = Int(int64(raw["window_minutes"]))
+        let resetSeconds = double(raw["resets_at"])
+        guard minutes > 0, resetSeconds > 0 else { return nil }
+        return RawUsageLimit(
+            usedPercent: max(0, min(100, double(raw["used_percent"]))),
+            windowMinutes: minutes,
+            resetsAt: Date(timeIntervalSince1970: resetSeconds)
+        )
+    }
+
+    private static func effectiveLimit(_ raw: RawUsageLimit, now: Date) -> UsageLimitSnapshot {
+        let duration = TimeInterval(raw.windowMinutes * 60)
+        var resetsAt = raw.resetsAt
+        var usedPercent = raw.usedPercent
+        if resetsAt <= now {
+            let elapsed = now.timeIntervalSince(resetsAt)
+            resetsAt = resetsAt.addingTimeInterval((floor(elapsed / duration) + 1) * duration)
+            usedPercent = 0
+        }
+        return UsageLimitSnapshot(
+            label: label(for: raw.windowMinutes),
+            usedPercent: usedPercent,
+            windowMinutes: raw.windowMinutes,
+            startsAt: resetsAt.addingTimeInterval(-duration),
+            resetsAt: resetsAt
+        )
+    }
+
+    private static func label(for minutes: Int) -> String {
+        if minutes % 1_440 == 0 { return "\(minutes / 1_440)d" }
+        if minutes % 60 == 0 { return "\(minutes / 60)h" }
+        return "\(minutes)m"
     }
 
     private static func apiEquivalentCost(for usageByModel: [String: TokenUsage]) -> (usd: Double?, complete: Bool) {
@@ -200,11 +334,17 @@ public enum UsageScanner {
     }
 
     private static func price(for modelID: String) -> Price? {
-        let normalized = modelID
-            .lowercased()
+        let normalized = modelID.lowercased()
             .replacingOccurrences(of: "_", with: "-")
             .replacingOccurrences(of: ":", with: "-")
         return prices.first { normalized.contains($0.key) }
+    }
+
+    private static func parseTimestamp(_ value: Any?) -> Date? {
+        guard let string = value as? String else { return nil }
+        let fractional = ISO8601DateFormatter()
+        fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return fractional.date(from: string) ?? ISO8601DateFormatter().date(from: string)
     }
 
     private static let prices: [Price] = [
@@ -236,37 +376,84 @@ public enum UsageScanner {
 private struct SessionUsage {
     let id: String?
     let modifiedAt: Date
-    let totalTokens: Int64
-    let modelUsage: [String: TokenUsage]
+    let latestAt: Date?
+    let totalUsage: TokenUsage
+    let events: [UsageEvent]
+    let latestDetail: SessionDetail?
+    let latestLimitRecord: LimitRecord?
+}
+
+private struct UsageEvent {
+    let timestamp: Date
+    let model: String
+    let usage: TokenUsage
+}
+
+private struct SessionDetail {
+    let timestamp: Date
+    let model: String?
+    let reasoningEffort: String?
+    let contextWindow: Int64
+    let latestUsage: TokenUsage
+}
+
+private struct LimitRecord {
+    let timestamp: Date
+    let limits: [RawUsageLimit]
+}
+
+private struct RawUsageLimit {
+    let usedPercent: Double
+    let windowMinutes: Int
+    let resetsAt: Date
 }
 
 private struct TokenUsage {
     var inputTokens: Int64
     var cachedInputTokens: Int64
     var outputTokens: Int64
+    var reasoningOutputTokens: Int64
+    var totalTokens: Int64
 
-    static let zero = TokenUsage(inputTokens: 0, cachedInputTokens: 0, outputTokens: 0)
+    static let zero = TokenUsage(inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, reasoningOutputTokens: 0, totalTokens: 0)
 
-    init(inputTokens: Int64, cachedInputTokens: Int64, outputTokens: Int64) {
+    init(inputTokens: Int64, cachedInputTokens: Int64, outputTokens: Int64, reasoningOutputTokens: Int64, totalTokens: Int64) {
         self.inputTokens = inputTokens
         self.cachedInputTokens = cachedInputTokens
         self.outputTokens = outputTokens
+        self.reasoningOutputTokens = reasoningOutputTokens
+        self.totalTokens = totalTokens
     }
 
     init(dictionary: [String: Any]) {
         inputTokens = int64(dictionary["input_tokens"])
         cachedInputTokens = int64(dictionary["cached_input_tokens"])
         outputTokens = int64(dictionary["output_tokens"])
+        reasoningOutputTokens = int64(dictionary["reasoning_output_tokens"])
+        let reportedTotal = int64(dictionary["total_tokens"])
+        totalTokens = reportedTotal > 0 ? reportedTotal : inputTokens + outputTokens
     }
 
     var hasUsage: Bool {
-        inputTokens > 0 || cachedInputTokens > 0 || outputTokens > 0
+        inputTokens > 0 || cachedInputTokens > 0 || outputTokens > 0 || totalTokens > 0
+    }
+
+    var snapshot: TokenUsageSnapshot {
+        TokenUsageSnapshot(
+            inputTokens: inputTokens,
+            cachedInputTokens: cachedInputTokens,
+            outputTokens: outputTokens,
+            reasoningOutputTokens: reasoningOutputTokens,
+            totalTokens: totalTokens
+        )
     }
 
     mutating func add(_ other: TokenUsage) {
         inputTokens += other.inputTokens
         cachedInputTokens += other.cachedInputTokens
         outputTokens += other.outputTokens
+        reasoningOutputTokens += other.reasoningOutputTokens
+        totalTokens += other.totalTokens
     }
 }
 
@@ -285,5 +472,11 @@ private func nonemptyString(_ value: Any?) -> String? {
 private func int64(_ value: Any?) -> Int64 {
     if let number = value as? NSNumber { return number.int64Value }
     if let string = value as? String { return Int64(string) ?? 0 }
+    return 0
+}
+
+private func double(_ value: Any?) -> Double {
+    if let number = value as? NSNumber { return number.doubleValue }
+    if let string = value as? String { return Double(string) ?? 0 }
     return 0
 }

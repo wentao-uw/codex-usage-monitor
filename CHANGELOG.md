@@ -4,7 +4,8 @@
 
 - Add a local MCP server with a `show_usage` tool.
 - Add a responsive Codex Desktop usage card with in-place refresh.
-- Add a native macOS menu bar app that aggregates total local tokens and API-equivalent cost across sessions.
+- Add a native macOS menu bar app that separates all-time local usage from usage accumulated in the current longest rolling-limit cycle.
+- Show current-cycle input, cached input, output, reasoning, cache hit, latest context fill, rolling-limit progress, reset time, and API-equivalent cost.
 - Add Chinese and English switching, 10-minute background refresh, and manual refresh to the menu bar app.
 - Refresh bundled API-equivalent prices for the current GPT-5.4, GPT-5.5, GPT-5.6, and GPT-6 families.
 - Preserve the existing terminal statusline and hook behavior.

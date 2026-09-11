@@ -32,12 +32,12 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/harveyxiacn/codex-usage-monitor.git"
+    "url": "git+https://github.com/wentao-uw/codex-usage-monitor.git"
   },
   "bugs": {
-    "url": "https://github.com/harveyxiacn/codex-usage-monitor/issues"
+    "url": "https://github.com/wentao-uw/codex-usage-monitor/issues"
   },
-  "homepage": "https://github.com/harveyxiacn/codex-usage-monitor#readme",
+  "homepage": "https://github.com/wentao-uw/codex-usage-monitor#readme",
   "files": [
     ".codex-plugin/",
     ".mcp.json",
