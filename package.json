@@ -1,6 +1,6 @@
 {
   "name": "codex-usage-monitor",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Codex CLI plugin and local monitor for usage, model, reasoning effort, context, cache hits, and API-equivalent cost",
   "main": "bin/codex-usage-monitor.js",
   "bin": {

@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.2.1 - 2026-09-12
 
 - Make all-time history optional and disabled by default, while keeping current-cycle usage on the fast path.
 - Calculate enabled history at background priority and reuse its cached aggregate across launches.
